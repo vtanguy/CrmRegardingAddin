@@ -5,7 +5,7 @@ using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
-// VT V2V2
+// VT 
 
 namespace CrmRegardingAddin
 {
