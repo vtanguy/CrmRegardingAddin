@@ -1,3 +1,4 @@
+
 // CrmMapiInterop.cs
 // VS2015 + C#6 compatible
 using System;
@@ -7,31 +8,20 @@ using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace CrmRegardingAddin
 {
-    /// <summary>
-    /// Ecrit / supprime les propriétés MAPI nommées comme l’addin Microsoft Dynamics CRM
-    /// afin que nos liens soient visibles/compatibles côté addin Microsoft.
-    /// </summary>
     public static class CrmMapiInterop
     {
-        // Base des propriétés nommées PS_PUBLIC_STRINGS
         private const string DASL_BASE = "http://schemas.microsoft.com/mapi/string/{00020329-0000-0000-C000-000000000046}/";
 
-        // Noms de propriétés observés dans tes exports MFCMAPI
-        private const string P_LINKSTATE = "crmLinkState";           // double -> 2.0
-        private const string P_SSS_TRACK = "crmSssPromoteTracker";   // int -> 0
-        private const string P_REGARDINGID = "crmRegardingId";         // string -> "{GUID}"
-        private const string P_REGARDINGOT = "crmRegardingObjectType"; // string -> "2" (ex.)
-        private const string P_REGARDING = "Regarding";              // string -> libellé
-        private const string P_ORGID = "crmorgid";               // string -> "{ORG_GUID}"
-        private const string P_PARTYINFO = "crmpartyinfo";           // string (XML)
+        private const string P_LINKSTATE   = "crmLinkState";
+        private const string P_SSS_TRACK   = "crmSssPromoteTracker";
+        private const string P_REGARDINGID = "crmRegardingId";
+        private const string P_REGARDINGOT = "crmRegardingObjectType";
+        private const string P_REGARDING   = "Regarding";
+        private const string P_ORGID       = "crmorgid";
+        private const string P_PARTYINFO   = "crmpartyinfo";
 
         private static string N(string name) { return DASL_BASE + name; }
 
-        // ---------------- MAIL ----------------
-
-        /// <summary>
-        /// Pose les propriétés MAPI "façon Microsoft" sur un MailItem.
-        /// </summary>
         public static void ApplyMsCompatForMail(
             Outlook.MailItem mail,
             string regardingLogicalNameOrCode,
@@ -42,54 +32,36 @@ namespace CrmRegardingAddin
             string fromSmtp,
             IEnumerable<string> recipients,
             bool isIncoming,
-            Guid orgId // <— paramètre ajouté
+            Guid orgId
         )
         {
             if (mail == null) return;
 
             var pa = mail.PropertyAccessor;
 
-            // 1) Etats / identifiants
-            try { pa.SetProperty(N(P_LINKSTATE), 2.0); } catch { }
-            try { pa.SetProperty(N(P_SSS_TRACK), 0); } catch { }
+            TrySet(pa, N(P_LINKSTATE), 2.0);
+            TrySet(pa, N(P_SSS_TRACK), 0);
 
             if (regardingId != Guid.Empty)
-            {
-                try { pa.SetProperty(N(P_REGARDINGID), ToBracedUpper(regardingId)); } catch { }
-            }
+                TrySet(pa, N(P_REGARDINGID), ToBracedUpper(regardingId));
 
-            // Si tu disposes d’un code d’objet (ex. "2" pour contact), mets-le ; sinon laisse tel quel.
             int typeCode;
             if (!string.IsNullOrEmpty(regardingLogicalNameOrCode) && int.TryParse(regardingLogicalNameOrCode, out typeCode))
-            {
-                try { pa.SetProperty(N(P_REGARDINGOT), typeCode.ToString()); } catch { }
-            }
+                TrySet(pa, N(P_REGARDINGOT), typeCode.ToString());
 
             if (!string.IsNullOrEmpty(regardingDisplayName))
-            {
-                try { pa.SetProperty(N(P_REGARDING), regardingDisplayName); } catch { }
-            }
+                TrySet(pa, N(P_REGARDING), regardingDisplayName);
 
             if (orgId != Guid.Empty)
-            {
-                try { pa.SetProperty(N(P_ORGID), ToBracedUpper(orgId)); } catch { }
-            }
+                TrySet(pa, N(P_ORGID), ToBracedUpper(orgId));
 
-            // 2) crmpartyinfo (XML)
-            try
-            {
-                string xml = BuildCrmPartyInfoXmlForMail(systemUserEmail, systemUserId, fromSmtp, recipients, isIncoming);
-                if (!string.IsNullOrEmpty(xml))
-                    pa.SetProperty(N(P_PARTYINFO), xml);
-            }
-            catch { }
+            string xml = BuildCrmPartyInfoXmlForMail(systemUserEmail, systemUserId, fromSmtp, recipients, isIncoming);
+            if (!string.IsNullOrEmpty(xml))
+                TrySet(pa, N(P_PARTYINFO), xml);
 
             try { mail.Save(); } catch { }
         }
 
-        /// <summary>
-        /// Supprime les propriétés MAPI "suivi" sur un MailItem.
-        /// </summary>
         public static void RemoveMsCompatFromMail(Outlook.MailItem mail)
         {
             if (mail == null) return;
@@ -104,11 +76,6 @@ namespace CrmRegardingAddin
             try { mail.Save(); } catch { }
         }
 
-        // ---------------- RENDEZ-VOUS ----------------
-
-        /// <summary>
-        /// Pose les propriétés MAPI "façon Microsoft" sur un AppointmentItem.
-        /// </summary>
         public static void ApplyMsCompatForAppointment(
             Outlook.AppointmentItem appt,
             Guid regardingId,
@@ -120,27 +87,18 @@ namespace CrmRegardingAddin
             if (appt == null) return;
             var pa = appt.PropertyAccessor;
 
-            try { pa.SetProperty(N(P_LINKSTATE), 2.0); } catch { }
-            try { pa.SetProperty(N(P_SSS_TRACK), 0); } catch { }
+            TrySet(pa, N(P_LINKSTATE), 2.0);
+            TrySet(pa, N(P_SSS_TRACK), 0);
 
             if (regardingId != Guid.Empty)
-            {
-                try { pa.SetProperty(N(P_REGARDINGID), ToBracedUpper(regardingId)); } catch { }
-            }
+                TrySet(pa, N(P_REGARDINGID), ToBracedUpper(regardingId));
 
             if (!string.IsNullOrEmpty(regardingDisplayName))
-            {
-                try { pa.SetProperty(N(P_REGARDING), regardingDisplayName); } catch { }
-            }
+                TrySet(pa, N(P_REGARDING), regardingDisplayName);
 
-            // crmpartyinfo pour rendez-vous : organizer en double (ParticipationType 5 et 7)
-            try
-            {
-                string xml = BuildCrmPartyInfoXmlForAppointment(organizerSmtp, organizerSystemUserId);
-                if (!string.IsNullOrEmpty(xml))
-                    pa.SetProperty(N(P_PARTYINFO), xml);
-            }
-            catch { }
+            string xml = BuildCrmPartyInfoXmlForAppointment(organizerSmtp, organizerSystemUserId);
+            if (!string.IsNullOrEmpty(xml))
+                TrySet(pa, N(P_PARTYINFO), xml);
 
             try { appt.Save(); } catch { }
         }
@@ -158,7 +116,10 @@ namespace CrmRegardingAddin
             try { appt.Save(); } catch { }
         }
 
-        // ---------------- Helpers ----------------
+        private static void TrySet(Outlook.PropertyAccessor pa, string dasl, object value)
+        {
+            try { pa.SetProperty(dasl, value); } catch { }
+        }
 
         private static void TryDelete(Outlook.PropertyAccessor pa, string dasl)
         {
@@ -183,10 +144,9 @@ namespace CrmRegardingAddin
             IEnumerable<string> recipients,
             bool isIncoming)
         {
-            var sb = new StringBuilder();
+            var sb = new System.Text.StringBuilder();
             sb.Append("<PartyMembers Version=\"1.0\">");
 
-            // 1) System user (TypeCode 8)
             if (!string.IsNullOrEmpty(systemUserEmail))
             {
                 string partyId = (systemUserId.HasValue && systemUserId.Value != Guid.Empty)
@@ -196,14 +156,12 @@ namespace CrmRegardingAddin
                     X(systemUserEmail), X(partyId));
             }
 
-            // 2) Expéditeur (TypeCode -1 si différent du user et si entrant)
             if (isIncoming && !string.IsNullOrEmpty(fromSmtp)
                 && !string.Equals(fromSmtp, systemUserEmail, StringComparison.OrdinalIgnoreCase))
             {
                 sb.AppendFormat("<Member Email=\"{0}\" PartyId=\"\" TypeCode=\"-1\" Name=\"\" />", X(fromSmtp));
             }
 
-            // 3) Destinataires To/Cc/Bcc (TypeCode -1) sans doublons et en excluant system user / sender déjà ajoutés
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (recipients != null)
             {
@@ -226,7 +184,7 @@ namespace CrmRegardingAddin
 
         private static string BuildCrmPartyInfoXmlForAppointment(string organizerSmtp, Guid? organizerSystemUserId)
         {
-            var sb = new StringBuilder();
+            var sb = new System.Text.StringBuilder();
             sb.Append("<PartyMembers Version=\"1.0\">");
 
             string partyId = (organizerSystemUserId.HasValue && organizerSystemUserId.Value != Guid.Empty)
@@ -234,7 +192,6 @@ namespace CrmRegardingAddin
                 : "";
             string email = organizerSmtp ?? "";
 
-            // Organizer avec ParticipationType 5 et 7 (constaté dans tes dumps)
             sb.AppendFormat("<Member Email=\"{0}\" PartyId=\"{1}\" TypeCode=\"8\" Name=\"\" ParticipationType=\"5\" />",
                 X(email), X(partyId));
             sb.AppendFormat("<Member Email=\"{0}\" PartyId=\"{1}\" TypeCode=\"8\" Name=\"\" ParticipationType=\"7\" />",

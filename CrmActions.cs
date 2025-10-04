@@ -1,11 +1,10 @@
+
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 using Outlook = Microsoft.Office.Interop.Outlook;
-
-// VT 
+using System.Text.RegularExpressions;
 
 namespace CrmRegardingAddin
 {
@@ -80,33 +79,37 @@ namespace CrmRegardingAddin
 
                 try
                 {
+                    // Destinataires consolidés, sans double ajout
                     var allRecipients = new List<string>();
-                    allRecipients.AddRange(toList); allRecipients.AddRange(ccList); allRecipients.AddRange(bccList);
-
-                    string regardingDisplay = (regarding != null && !string.IsNullOrEmpty(regarding.Name)) ? regarding.Name : "";
-                    bool isIncoming = !isOutgoing;
-
                     allRecipients.AddRange(toList);
                     allRecipients.AddRange(ccList);
                     allRecipients.AddRange(bccList);
 
-                    // ➜ NOUVEAU : récupérer l’OrgId
+                    // Regarding display : si vide dans l'EntityReference, on tente un retrieve pour peupler
+                    string regardingDisplay = (regarding != null && !string.IsNullOrEmpty(regarding.Name))
+                                              ? regarding.Name
+                                              : TryGetRegardingDisplay(org, regarding);
+
+                    bool isIncoming = !isOutgoing;
+
+                    // Code objet attendu par l'addin MS (ex: contact=2, account=1, lead=4, opportunity=3...)
+                    var regardingTypeCode = MapEntityLogicalNameToObjectTypeCode(regarding != null ? regarding.LogicalName : null);
+
+                    // Id d'organisation pour crmorgid
                     var orgId = GetOrganizationId(org);
 
-                    // ➜ NOUVEAU : passer orgId et regardingDisplay à l’Interop
                     CrmMapiInterop.ApplyMsCompatForMail(
                         mi,
-                        "", // crmid libre si tu ne veux pas le pousser
+                        regardingTypeCode,
                         (regarding != null) ? regarding.Id : Guid.Empty,
-                        regardingDisplay,
+                        regardingDisplay ?? "",
                         mySmtp,
                         (meId != Guid.Empty) ? (Guid?)meId : null,
                         fromSmtp,
                         allRecipients,
                         isIncoming,
-                        orgId               // <— nouveau paramètre
+                        orgId
                     );
-
                 }
                 catch { }
 
@@ -177,12 +180,14 @@ namespace CrmRegardingAddin
                     var mySmtp = GetCurrentUserSmtp(org);
                     var myId   = GetCurrentUserId(org);
 
-                    string regardingDisplay = (regarding != null && !string.IsNullOrEmpty(regarding.Name)) ? regarding.Name : "";
+                    string regardingDisplay = (regarding != null && !string.IsNullOrEmpty(regarding.Name))
+                                              ? regarding.Name
+                                              : TryGetRegardingDisplay(org, regarding);
 
                     CrmMapiInterop.ApplyMsCompatForAppointment(
                         appt,
                         (regarding != null) ? regarding.Id : Guid.Empty,
-                        regardingDisplay,
+                        regardingDisplay ?? "",
                         mySmtp,
                         (myId != Guid.Empty) ? (Guid?)myId : null
                     );
@@ -527,13 +532,14 @@ namespace CrmRegardingAddin
             var res = org.RetrieveMultiple(qe);
             return (res != null && res.Entities != null && res.Entities.Count > 0) ? res.Entities[0] : null;
         }
+
         private static Guid GetOrganizationId(IOrganizationService org)
         {
             try
             {
-                var q = new Microsoft.Xrm.Sdk.Query.QueryExpression("organization")
+                var q = new QueryExpression("organization")
                 {
-                    ColumnSet = new Microsoft.Xrm.Sdk.Query.ColumnSet("organizationid"),
+                    ColumnSet = new ColumnSet("organizationid"),
                     TopCount = 1,
                     NoLock = true
                 };
@@ -543,6 +549,43 @@ namespace CrmRegardingAddin
             }
             catch { }
             return Guid.Empty;
+        }
+
+        private static string TryGetRegardingDisplay(IOrganizationService org, EntityReference er)
+        {
+            if (org == null || er == null) return null;
+            try
+            {
+                string nameAttr = null;
+                switch (er.LogicalName)
+                {
+                    case "contact":     nameAttr = "fullname"; break;
+                    case "account":     nameAttr = "name";     break;
+                    case "lead":        nameAttr = "fullname"; break;
+                    case "opportunity": nameAttr = "name";     break;
+                    case "systemuser":  nameAttr = "fullname"; break;
+                    default:            nameAttr = null;       break;
+                }
+                if (nameAttr == null) return null;
+                var e = org.Retrieve(er.LogicalName, er.Id, new ColumnSet(nameAttr));
+                return e.GetAttributeValue<string>(nameAttr);
+            }
+            catch { return null; }
+        }
+
+        private static string MapEntityLogicalNameToObjectTypeCode(string logicalName)
+        {
+            if (string.IsNullOrEmpty(logicalName)) return "";
+            switch (logicalName)
+            {
+                case "account":     return "1";
+                case "contact":     return "2";
+                case "opportunity": return "3";
+                case "lead":        return "4";
+                case "systemuser":  return "8";
+                case "incident":    return "112";
+                default: return "";
+            }
         }
     }
 }
