@@ -29,10 +29,12 @@ namespace CrmRegardingAddin
 
                 Guid meId = GetCurrentUserId(org);
 
+                var resolvedPartyCache = new Dictionary<string, EntityReference>(StringComparer.OrdinalIgnoreCase);
+
                 List<Entity> fromParties = BuildFromParties(org, fromSmtp, isOutgoing, meId);
-                List<Entity> toParties   = BuildRecipients(org, toList,  2);
-                List<Entity> ccParties   = BuildRecipients(org, ccList,  3);
-                List<Entity> bccParties  = BuildRecipients(org, bccList, 4);
+                List<Entity> toParties   = BuildRecipients(org, toList,  2, resolvedPartyCache);
+                List<Entity> ccParties   = BuildRecipients(org, ccList,  3, resolvedPartyCache);
+                List<Entity> bccParties  = BuildRecipients(org, bccList, 4, resolvedPartyCache);
 
                 string internetId = null;
                 try { internetId = MailUtil.GetInternetMessageId(mi); } catch { }
@@ -98,6 +100,11 @@ namespace CrmRegardingAddin
                     // Id d'organisation pour crmorgid
                     var orgId = GetOrganizationId(org);
 
+                    var compatRecipients = BuildCompatPartyMembers(org, allRecipients, resolvedPartyCache);
+                    var fromMember = isOutgoing
+                        ? BuildSystemUserCompatPartyMember(mySmtp, meId)
+                        : BuildCompatPartyMember(org, fromSmtp, resolvedPartyCache);
+
                     CrmMapiInterop.ApplyMsCompatForMail(
                         mi,
                         regardingTypeCode,
@@ -105,8 +112,8 @@ namespace CrmRegardingAddin
                         regardingDisplay ?? "",
                         mySmtp,
                         (meId != Guid.Empty) ? (Guid?)meId : null,
-                        fromSmtp,
-                        allRecipients,
+                        fromMember,
+                        compatRecipients,
                         isIncoming,
                         orgId
                     );
@@ -285,22 +292,30 @@ namespace CrmRegardingAddin
             return list;
         }
 
-        private static List<Entity> BuildRecipients(IOrganizationService org, List<string> emails, int mask)
+        private static List<Entity> BuildRecipients(
+            IOrganizationService org,
+            List<string> emails,
+            int mask,
+            Dictionary<string, EntityReference> resolvedPartyCache)
         {
             var bags = new List<Entity>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var s in emails)
             {
-                if (string.IsNullOrWhiteSpace(s)) continue;
-                if (seen.Contains(s)) continue;
-                seen.Add(s);
+                var normalized = (s ?? "").Trim();
+                if (normalized.Length == 0) continue;
+                if (!seen.Add(normalized)) continue;
 
-                bags.Add(BuildActivityPartyFromEmail(org, s, mask));
+                bags.Add(BuildActivityPartyFromEmail(org, normalized, mask, resolvedPartyCache));
             }
             return bags;
         }
 
-        private static Entity BuildActivityPartyFromEmail(IOrganizationService org, string email, int participationTypeMask)
+        private static Entity BuildActivityPartyFromEmail(
+            IOrganizationService org,
+            string email,
+            int participationTypeMask,
+            Dictionary<string, EntityReference> resolvedPartyCache)
         {
             if (string.IsNullOrWhiteSpace(email))
             {
@@ -310,14 +325,98 @@ namespace CrmRegardingAddin
                 return apx;
             }
 
-            var er = TryResolveByEmail(org, "contact", "emailaddress1", email, "fullname");
-            if (er == null) er = TryResolveByEmail(org, "account", "emailaddress1", email, "name");
-            if (er == null) er = TryResolveByEmail(org, "systemuser", "internalemailaddress", email, "fullname");
+            var er = ResolvePartyByEmail(org, email, resolvedPartyCache);
 
             var ap = new Entity("activityparty");
             ap["participationtypemask"] = new OptionSetValue(participationTypeMask);
             if (er != null) ap["partyid"] = er; else ap["addressused"] = email;
             return ap;
+        }
+
+        private static EntityReference ResolvePartyByEmail(
+            IOrganizationService org,
+            string email,
+            Dictionary<string, EntityReference> resolvedPartyCache)
+        {
+            if (string.IsNullOrWhiteSpace(email)) return null;
+
+            EntityReference cached;
+            if (resolvedPartyCache != null && resolvedPartyCache.TryGetValue(email, out cached))
+                return cached;
+
+            var er = TryResolveByEmail(org, "contact", "emailaddress1", email, "fullname");
+            if (er == null) er = TryResolveByEmail(org, "account", "emailaddress1", email, "name");
+            if (er == null) er = TryResolveByEmail(org, "systemuser", "internalemailaddress", email, "fullname");
+
+            if (resolvedPartyCache != null)
+                resolvedPartyCache[email] = er;
+
+            return er;
+        }
+
+        private static IEnumerable<CrmMapiInterop.CrmPartyMember> BuildCompatPartyMembers(
+            IOrganizationService org,
+            IEnumerable<string> emails,
+            Dictionary<string, EntityReference> resolvedPartyCache)
+        {
+            var list = new List<CrmMapiInterop.CrmPartyMember>();
+            if (emails == null) return list;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var raw in emails)
+            {
+                var email = (raw ?? "").Trim();
+                if (email.Length == 0) continue;
+                if (!seen.Add(email)) continue;
+
+                var member = BuildCompatPartyMember(org, email, resolvedPartyCache);
+                if (member != null) list.Add(member);
+            }
+
+            return list;
+        }
+
+        private static CrmMapiInterop.CrmPartyMember BuildCompatPartyMember(
+            IOrganizationService org,
+            string email,
+            Dictionary<string, EntityReference> resolvedPartyCache)
+        {
+            if (string.IsNullOrWhiteSpace(email)) return null;
+
+            var normalized = email.Trim();
+            var member = new CrmMapiInterop.CrmPartyMember
+            {
+                Email = normalized,
+                Name = normalized,
+                TypeCode = -1
+            };
+
+            var er = ResolvePartyByEmail(org, normalized, resolvedPartyCache);
+            if (er != null)
+            {
+                member.PartyId = er.Id;
+                if (!string.IsNullOrEmpty(er.Name))
+                    member.Name = er.Name;
+
+                int mapped;
+                var mappedString = MapEntityLogicalNameToObjectTypeCode(er.LogicalName);
+                if (!string.IsNullOrEmpty(mappedString) && int.TryParse(mappedString, out mapped))
+                    member.TypeCode = mapped;
+            }
+
+            return member;
+        }
+
+        private static CrmMapiInterop.CrmPartyMember BuildSystemUserCompatPartyMember(string email, Guid systemUserId)
+        {
+            if (string.IsNullOrWhiteSpace(email)) return null;
+            return new CrmMapiInterop.CrmPartyMember
+            {
+                Email = email,
+                Name = email,
+                PartyId = (systemUserId != Guid.Empty) ? (Guid?)systemUserId : null,
+                TypeCode = 8
+            };
         }
 
         private static EntityReference TryResolveByEmail(IOrganizationService org, string entity, string emailField, string email, string nameField)
