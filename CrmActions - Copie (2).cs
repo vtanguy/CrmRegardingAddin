@@ -1,11 +1,10 @@
-﻿using System;
+
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 using Outlook = Microsoft.Office.Interop.Outlook;
-
-// VT
 
 namespace CrmRegardingAddin
 {
@@ -86,27 +85,17 @@ namespace CrmRegardingAddin
                     string regardingDisplay = (regarding != null && !string.IsNullOrEmpty(regarding.Name)) ? regarding.Name : "";
                     bool isIncoming = !isOutgoing;
 
-                    allRecipients.AddRange(toList);
-                    allRecipients.AddRange(ccList);
-                    allRecipients.AddRange(bccList);
-
-                    // ➜ NOUVEAU : récupérer l’OrgId
-                    var orgId = GetOrganizationId(org);
-
-                    // ➜ NOUVEAU : passer orgId et regardingDisplay à l’Interop
                     CrmMapiInterop.ApplyMsCompatForMail(
                         mi,
-                        "", // crmid libre si tu ne veux pas le pousser
+                        "",
                         (regarding != null) ? regarding.Id : Guid.Empty,
                         regardingDisplay,
                         mySmtp,
                         (meId != Guid.Empty) ? (Guid?)meId : null,
                         fromSmtp,
                         allRecipients,
-                        isIncoming,
-                        orgId               // <— nouveau paramètre
+                        isIncoming
                     );
-
                 }
                 catch { }
 
@@ -526,23 +515,6 @@ namespace CrmRegardingAddin
 
             var res = org.RetrieveMultiple(qe);
             return (res != null && res.Entities != null && res.Entities.Count > 0) ? res.Entities[0] : null;
-        }
-        private static Guid GetOrganizationId(IOrganizationService org)
-        {
-            try
-            {
-                var q = new Microsoft.Xrm.Sdk.Query.QueryExpression("organization")
-                {
-                    ColumnSet = new Microsoft.Xrm.Sdk.Query.ColumnSet("organizationid"),
-                    TopCount = 1,
-                    NoLock = true
-                };
-                var r = org.RetrieveMultiple(q);
-                if (r != null && r.Entities.Count > 0)
-                    return r.Entities[0].Id;
-            }
-            catch { }
-            return Guid.Empty;
         }
     }
 }
