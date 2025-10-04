@@ -14,8 +14,8 @@ MAIL after you set the CRM regarding:
         regardingDisplay,   // e.g. "ACCOUNT: Contoso"
         currentUserSmtp,    // your Outlook/CRM user's SMTP
         currentUserCrmId,   // Guid? of systemuser
-        senderSmtp,         // actual From SMTP
-        recipientSmtps,     // IEnumerable<string>
+        fromMember,         // CrmMapiInterop.CrmPartyMember (sender information)
+        recipientMembers,   // IEnumerable<CrmMapiInterop.CrmPartyMember>
         isIncoming          // true for received, false for sent
     );
 

@@ -5,6 +5,8 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using Outlook = Microsoft.Office.Interop.Outlook;
+using System.Security;
+
 
 namespace CrmRegardingAddin
 {
@@ -22,6 +24,20 @@ namespace CrmRegardingAddin
 
         private static string N(string name) { return DASL_BASE + name; }
 
+        public class CrmPartyMember
+        {
+            public string Email { get; set; }
+            public Guid? PartyId { get; set; }
+            public int? TypeCode { get; set; }
+            public string Name { get; set; }
+        }
+
+        private static string ToUnbracedLower(Guid id)
+        {
+            return id == Guid.Empty ? "" : id.ToString("D").ToLowerInvariant();
+        }
+
+
         public static void ApplyMsCompatForMail(
             Outlook.MailItem mail,
             string regardingLogicalNameOrCode,
@@ -29,8 +45,8 @@ namespace CrmRegardingAddin
             string regardingDisplayName,
             string systemUserEmail,
             Guid? systemUserId,
-            string fromSmtp,
-            IEnumerable<string> recipients,
+            CrmPartyMember fromMember,
+            IEnumerable<CrmPartyMember> recipients,
             bool isIncoming,
             Guid orgId
         )
@@ -55,7 +71,7 @@ namespace CrmRegardingAddin
             if (orgId != Guid.Empty)
                 TrySet(pa, N(P_ORGID), ToBracedUpper(orgId));
 
-            string xml = BuildCrmPartyInfoXmlForMail(systemUserEmail, systemUserId, fromSmtp, recipients, isIncoming);
+            string xml = BuildCrmPartyInfoXmlForMail(systemUserEmail, systemUserId, fromMember, recipients, isIncoming);
             if (!string.IsNullOrEmpty(xml))
                 TrySet(pa, N(P_PARTYINFO), xml);
 
@@ -140,46 +156,89 @@ namespace CrmRegardingAddin
         private static string BuildCrmPartyInfoXmlForMail(
             string systemUserEmail,
             Guid? systemUserId,
-            string fromSmtp,
-            IEnumerable<string> recipients,
+            CrmPartyMember fromMember,
+            IEnumerable<CrmPartyMember> recipients,
             bool isIncoming)
         {
-            var sb = new System.Text.StringBuilder();
+            // Schéma attendu par l’addin Microsoft (vu dans tes dumps MFCMAPI) :
+            // <PartyMembers Version="1.0">
+            //   <Member Email="..." PartyId="optional" TypeCode="8 or -1" Name="..." />
+            //   ...
+            // </PartyMembers>
+            //
+            // - systemuser => TypeCode="8", PartyId = GUID sans accolades, en minuscules
+            // - autres adresses => TypeCode renseigné si connu (contact=2, account=1, lead=4...), sinon -1
+            // - Name doit être non vide (fallback = email)
+
+            var sb = new StringBuilder();
             sb.Append("<PartyMembers Version=\"1.0\">");
 
-            if (!string.IsNullOrEmpty(systemUserEmail))
+            Action<CrmPartyMember> writeMember = member =>
             {
-                string partyId = (systemUserId.HasValue && systemUserId.Value != Guid.Empty)
-                    ? ToBracedUpper(systemUserId.Value)
-                    : "";
-                sb.AppendFormat("<Member Email=\"{0}\" PartyId=\"{1}\" TypeCode=\"8\" Name=\"\" />",
-                    X(systemUserEmail), X(partyId));
-            }
+                if (member == null) return;
 
-            if (isIncoming && !string.IsNullOrEmpty(fromSmtp)
-                && !string.Equals(fromSmtp, systemUserEmail, StringComparison.OrdinalIgnoreCase))
-            {
-                sb.AppendFormat("<Member Email=\"{0}\" PartyId=\"\" TypeCode=\"-1\" Name=\"\" />", X(fromSmtp));
-            }
+                var email = (member.Email ?? "").Trim();
+                if (email.Length == 0) return;
 
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (recipients != null)
-            {
-                foreach (var r in recipients)
+                int typeCode = member.TypeCode ?? -1;
+                Guid? partyId = member.PartyId;
+
+                var safeName = string.IsNullOrWhiteSpace(member.Name) ? email : member.Name;
+                string partyIdAttr = "";
+                if (partyId.HasValue && partyId.Value != Guid.Empty)
                 {
-                    var e = (r ?? "").Trim();
-                    if (e.Length == 0) continue;
-                    if (seen.Contains(e)) continue;
-                    if (string.Equals(e, systemUserEmail, StringComparison.OrdinalIgnoreCase)) continue;
-                    if (string.Equals(e, fromSmtp, StringComparison.OrdinalIgnoreCase)) continue;
+                    // IMPORTANT: pas d’accolades, en minuscules
+                    partyIdAttr = $" PartyId=\"{ToUnbracedLower(partyId.Value)}\"";
+                }
 
-                    seen.Add(e);
-                    sb.AppendFormat("<Member Email=\"{0}\" PartyId=\"\" TypeCode=\"-1\" Name=\"\" />", X(e));
+                sb.Append("<Member");
+                sb.Append($" Email=\"{SecurityElement.Escape(email)}\"");
+                sb.Append(partyIdAttr);
+                sb.Append($" TypeCode=\"{typeCode}\"");
+                sb.Append($" Name=\"{SecurityElement.Escape(safeName)}\"");
+                sb.Append(" />");
+            };
+
+            // 1) FROM / TO selon entrant/sortant
+            if (isIncoming)
+            {
+                // Entrant: FROM = expéditeur SMTP
+                writeMember(fromMember);
+
+                // TO = systemuser (TypeCode=8, avec PartyId si dispo)
+                var systemUserMember = BuildSystemUserMember(systemUserEmail, systemUserId);
+                writeMember(systemUserMember);
+            }
+            else
+            {
+                // Sortant: FROM = systemuser (TypeCode=8)
+                var systemUserMember = BuildSystemUserMember(systemUserEmail, systemUserId);
+                writeMember(systemUserMember);
+
+                // TO = destinataires (TypeCode=-1, pas de PartyId)
+                if (recipients != null)
+                {
+                    foreach (var r in recipients)
+                    {
+                        writeMember(r);
+                    }
                 }
             }
 
             sb.Append("</PartyMembers>");
             return sb.ToString();
+        }
+
+        private static CrmPartyMember BuildSystemUserMember(string email, Guid? systemUserId)
+        {
+            if (string.IsNullOrWhiteSpace(email)) return null;
+            return new CrmPartyMember
+            {
+                Email = email,
+                Name = email,
+                PartyId = systemUserId,
+                TypeCode = 8
+            };
         }
 
         private static string BuildCrmPartyInfoXmlForAppointment(string organizerSmtp, Guid? organizerSystemUserId)
