@@ -24,6 +24,14 @@ namespace CrmRegardingAddin
 
         private static string N(string name) { return DASL_BASE + name; }
 
+        public class CrmPartyMember
+        {
+            public string Email { get; set; }
+            public Guid? PartyId { get; set; }
+            public int? TypeCode { get; set; }
+            public string Name { get; set; }
+        }
+
         private static string ToUnbracedLower(Guid id)
         {
             return id == Guid.Empty ? "" : id.ToString("D").ToLowerInvariant();
@@ -37,8 +45,8 @@ namespace CrmRegardingAddin
             string regardingDisplayName,
             string systemUserEmail,
             Guid? systemUserId,
-            string fromSmtp,
-            IEnumerable<string> recipients,
+            CrmPartyMember fromMember,
+            IEnumerable<CrmPartyMember> recipients,
             bool isIncoming,
             Guid orgId
         )
@@ -63,7 +71,7 @@ namespace CrmRegardingAddin
             if (orgId != Guid.Empty)
                 TrySet(pa, N(P_ORGID), ToBracedUpper(orgId));
 
-            string xml = BuildCrmPartyInfoXmlForMail(systemUserEmail, systemUserId, fromSmtp, recipients, isIncoming);
+            string xml = BuildCrmPartyInfoXmlForMail(systemUserEmail, systemUserId, fromMember, recipients, isIncoming);
             if (!string.IsNullOrEmpty(xml))
                 TrySet(pa, N(P_PARTYINFO), xml);
 
@@ -148,8 +156,8 @@ namespace CrmRegardingAddin
         private static string BuildCrmPartyInfoXmlForMail(
             string systemUserEmail,
             Guid? systemUserId,
-            string fromSmtp,
-            IEnumerable<string> recipients,
+            CrmPartyMember fromMember,
+            IEnumerable<CrmPartyMember> recipients,
             bool isIncoming)
         {
             // Schéma attendu par l’addin Microsoft (vu dans tes dumps MFCMAPI) :
@@ -159,19 +167,25 @@ namespace CrmRegardingAddin
             // </PartyMembers>
             //
             // - systemuser => TypeCode="8", PartyId = GUID sans accolades, en minuscules
-            // - autres adresses => TypeCode="-1", PartyId vide
+            // - autres adresses => TypeCode renseigné si connu (contact=2, account=1, lead=4...), sinon -1
             // - Name doit être non vide (fallback = email)
 
             var sb = new StringBuilder();
             sb.Append("<PartyMembers Version=\"1.0\">");
 
-            Action<string, Guid?, int, string> writeMember = (email, partyId, typeCode, name) =>
+            Action<CrmPartyMember> writeMember = member =>
             {
-                if (string.IsNullOrWhiteSpace(email)) return;
+                if (member == null) return;
 
-                var safeName = string.IsNullOrWhiteSpace(name) ? email : name;
+                var email = (member.Email ?? "").Trim();
+                if (email.Length == 0) return;
+
+                int typeCode = member.TypeCode ?? -1;
+                Guid? partyId = member.PartyId;
+
+                var safeName = string.IsNullOrWhiteSpace(member.Name) ? email : member.Name;
                 string partyIdAttr = "";
-                if (partyId.HasValue && partyId.Value != Guid.Empty && typeCode == 8)
+                if (partyId.HasValue && partyId.Value != Guid.Empty)
                 {
                     // IMPORTANT: pas d’accolades, en minuscules
                     partyIdAttr = $" PartyId=\"{ToUnbracedLower(partyId.Value)}\"";
@@ -188,33 +202,43 @@ namespace CrmRegardingAddin
             // 1) FROM / TO selon entrant/sortant
             if (isIncoming)
             {
-                // Entrant: FROM = expéditeur SMTP (TypeCode=-1, sans PartyId)
-                writeMember(fromSmtp, null, -1, fromSmtp);
+                // Entrant: FROM = expéditeur SMTP
+                writeMember(fromMember);
 
                 // TO = systemuser (TypeCode=8, avec PartyId si dispo)
-                if (!string.IsNullOrWhiteSpace(systemUserEmail))
-                    writeMember(systemUserEmail, systemUserId ?? Guid.Empty, 8, systemUserEmail);
+                var systemUserMember = BuildSystemUserMember(systemUserEmail, systemUserId);
+                writeMember(systemUserMember);
             }
             else
             {
                 // Sortant: FROM = systemuser (TypeCode=8)
-                if (!string.IsNullOrWhiteSpace(systemUserEmail))
-                    writeMember(systemUserEmail, systemUserId ?? Guid.Empty, 8, systemUserEmail);
+                var systemUserMember = BuildSystemUserMember(systemUserEmail, systemUserId);
+                writeMember(systemUserMember);
 
                 // TO = destinataires (TypeCode=-1, pas de PartyId)
                 if (recipients != null)
                 {
                     foreach (var r in recipients)
                     {
-                        var email = (r ?? "").Trim();
-                        if (email.Length == 0) continue;
-                        writeMember(email, null, -1, email);
+                        writeMember(r);
                     }
                 }
             }
 
             sb.Append("</PartyMembers>");
             return sb.ToString();
+        }
+
+        private static CrmPartyMember BuildSystemUserMember(string email, Guid? systemUserId)
+        {
+            if (string.IsNullOrWhiteSpace(email)) return null;
+            return new CrmPartyMember
+            {
+                Email = email,
+                Name = email,
+                PartyId = systemUserId,
+                TypeCode = 8
+            };
         }
 
         private static string BuildCrmPartyInfoXmlForAppointment(string organizerSmtp, Guid? organizerSystemUserId)
