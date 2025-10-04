@@ -5,6 +5,8 @@
 *.userosscache
 *.sln.docstates
 App.config
+**/App.config
+**/app.config
 
 # Build
 bin/
