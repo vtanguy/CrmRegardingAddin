@@ -1,0 +1,26 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build
+bin/
+obj/
+[Bb]uild/
+[Ll]og/
+
+# NuGet
+packages/
+*.nupkg
+project.lock.json
+*.snupkg
+
+# Resharper / Rider / etc.
+_ReSharper*/
+*.DotSettings.user
+
+# Office/VSTO
+*.vsto
+Publish/
