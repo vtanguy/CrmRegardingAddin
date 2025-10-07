@@ -14,13 +14,18 @@ namespace CrmRegardingAddin
     {
         private const string DASL_BASE = "http://schemas.microsoft.com/mapi/string/{00020329-0000-0000-C000-000000000046}/";
 
-        private const string P_LINKSTATE   = "crmLinkState";
-        private const string P_SSS_TRACK   = "crmSssPromoteTracker";
-        private const string P_REGARDINGID = "crmRegardingId";
-        private const string P_REGARDINGOT = "crmRegardingObjectType";
-        private const string P_REGARDING   = "Regarding";
-        private const string P_ORGID       = "crmorgid";
-        private const string P_PARTYINFO   = "crmpartyinfo";
+        // UDF alignées sur ce que lit CrmLinkPane
+        private const string P_LINKSTATE = "crmlinkstate";
+        private const string P_CRMID       = "crmid"; // GUID CRM de l’activité (avec accolades)
+
+        private const string P_SSS_TRACK = "crmSssPromoteTracker"; // on NE l’utilisera PAS pour les RDV
+        private const string P_REGARDINGID = "crmregardingobjectid";
+        private const string P_REGARDINGOT = "crmregardingobjecttypecode";
+        private const string P_REGARDING = "crmregardingobject";
+        private const string P_ORGID = "crmorgid";
+        private const string P_PARTYINFO = "crmpartyinfo";
+        private const string P_OWNER_SMTP = "crmownersmtp";
+        private const string P_OWNER_SYSID = "crmownersystemuserid";
 
         private static string N(string name) { return DASL_BASE + name; }
 
@@ -56,14 +61,11 @@ namespace CrmRegardingAddin
             var pa = mail.PropertyAccessor;
 
             TrySet(pa, N(P_LINKSTATE), 2.0);
-            TrySet(pa, N(P_SSS_TRACK), 0);
-
+            // (disabled) TrySet(pa, N(P_SSS_TRACK), 0); // avoid SSS duplicate promotion for appointments
             if (regardingId != Guid.Empty)
                 TrySet(pa, N(P_REGARDINGID), ToBracedUpper(regardingId));
 
-            int typeCode;
-            if (!string.IsNullOrEmpty(regardingLogicalNameOrCode) && int.TryParse(regardingLogicalNameOrCode, out typeCode))
-                TrySet(pa, N(P_REGARDINGOT), typeCode.ToString());
+            int apTypeCode; if (!string.IsNullOrEmpty(regardingLogicalNameOrCode) && int.TryParse(regardingLogicalNameOrCode, out apTypeCode)) TrySet(pa, N(P_REGARDINGOT), apTypeCode.ToString());
 
             if (!string.IsNullOrEmpty(regardingDisplayName))
                 TrySet(pa, N(P_REGARDING), regardingDisplayName);
@@ -96,22 +98,41 @@ namespace CrmRegardingAddin
             Outlook.AppointmentItem appt,
             Guid regardingId,
             string regardingDisplayName,
+            string regardingLogicalNameOrCode,
+            Guid orgId,
             string organizerSmtp,
-            Guid? organizerSystemUserId
-        )
+            Guid? organizerSystemUserId)
         {
             if (appt == null) return;
             var pa = appt.PropertyAccessor;
 
+            // 1) Indiquer le lien (le panneau lit 'crmlinkstate')
             TrySet(pa, N(P_LINKSTATE), 2.0);
-            TrySet(pa, N(P_SSS_TRACK), 0);
 
+            // 2) NE PAS bloquer SSS : surtout ne pas mettre crmSssPromoteTracker=0
+            // TrySet(pa, N(P_SSS_TRACK), 0); // ❌ à NE PAS faire pour les rendez-vous
+
+            // 3) Regarding
             if (regardingId != Guid.Empty)
                 TrySet(pa, N(P_REGARDINGID), ToBracedUpper(regardingId));
+
+            int typeCode;
+            if (!string.IsNullOrEmpty(regardingLogicalNameOrCode) && int.TryParse(regardingLogicalNameOrCode, out typeCode))
+                TrySet(pa, N(P_REGARDINGOT), typeCode.ToString());
 
             if (!string.IsNullOrEmpty(regardingDisplayName))
                 TrySet(pa, N(P_REGARDING), regardingDisplayName);
 
+            if (orgId != Guid.Empty)
+                TrySet(pa, N(P_ORGID), ToBracedUpper(orgId));
+
+            // 4) Infos d’organisateur attendues par le panneau (et utiles côté add-in MS)
+            if (!string.IsNullOrEmpty(organizerSmtp))
+                TrySet(pa, N(P_OWNER_SMTP), organizerSmtp);
+            if (organizerSystemUserId.HasValue && organizerSystemUserId.Value != Guid.Empty)
+                TrySet(pa, N(P_OWNER_SYSID), ToBracedUpper(organizerSystemUserId.Value));
+
+            // 5) XML PartyInfo (organizer/required/optional selon ton implémentation)
             string xml = BuildCrmPartyInfoXmlForAppointment(organizerSmtp, organizerSystemUserId);
             if (!string.IsNullOrEmpty(xml))
                 TrySet(pa, N(P_PARTYINFO), xml);
@@ -259,5 +280,48 @@ namespace CrmRegardingAddin
             sb.Append("</PartyMembers>");
             return sb.ToString();
         }
-    }
+
+    
+
+    public static void TagAfterCrmAppointmentCreate(
+    Outlook.AppointmentItem appt,
+    Guid crmApptId,
+    Guid regardingId,
+    string regardingDisplayName,
+    string regardingLogicalNameOrCode,
+    Guid orgId,
+    string ownerSmtp,
+    Guid? ownerSystemUserId)
+{
+    if (appt == null) return;
+    var pa = appt.PropertyAccessor;
+
+    TrySet(pa, N(P_LINKSTATE), 2.0);
+
+    if (crmApptId != Guid.Empty)
+        TrySet(pa, N(P_CRMID), ToBracedUpper(crmApptId));
+
+    if (regardingId != Guid.Empty)
+        TrySet(pa, N(P_REGARDINGID), ToBracedUpper(regardingId));
+
+    int typeCode;
+    if (!string.IsNullOrEmpty(regardingLogicalNameOrCode) && int.TryParse(regardingLogicalNameOrCode, out typeCode))
+        TrySet(pa, N(P_REGARDINGOT), typeCode.ToString());
+
+    if (!string.IsNullOrEmpty(regardingDisplayName))
+        TrySet(pa, N(P_REGARDING), regardingDisplayName);
+
+    if (orgId != Guid.Empty)
+        TrySet(pa, N(P_ORGID), ToBracedUpper(orgId));
+
+    if (!string.IsNullOrEmpty(ownerSmtp))
+        TrySet(pa, N(P_OWNER_SMTP), ownerSmtp);
+    if (ownerSystemUserId.HasValue && ownerSystemUserId.Value != Guid.Empty)
+        TrySet(pa, N(P_OWNER_SYSID), ToBracedUpper(ownerSystemUserId.Value));
+
+    try { appt.Save(); } catch { }
+}
+}
+
+
 }

@@ -136,82 +136,83 @@ namespace CrmRegardingAddin
         {
             if (org == null || appt == null) return;
 
+            Logger.Info("[Appt] SetRegarding: subject='" + (appt.Subject ?? "") + "'");
+
+            // 1) Clé unique Outlook
+            string globalId = null;
+            try { globalId = appt.GlobalAppointmentID; } catch { }
+            Logger.Info("[Appt] GlobalAppointmentID=" + (globalId ?? "(null)"));
+
+            // 2) Recherche CRM par globalobjectid (sans forcer 'regarding' pour aussi retrouver ceux non liés)
+            var existing = FindCrmAppointmentByGlobalId(org, globalId, onlyIfLinked: false);
+            Logger.Info(existing == null ? "[Appt] Not found in CRM" : "[Appt] Found CRM appt: " + existing.Id);
+
+            // 3) Contexte utilisateur/org
+            var meId = GetCurrentUserId(org);
+            var ownerSmtp = GetCurrentUserSmtp(org);
+            var orgId = GetOrganizationId(org);
+            string regardingDisplay = TryGetRegardingDisplay(org, regarding);
+
+            // 4) Créer si absent (évite le doublon SSS car même 'globalobjectid')
+            Guid crmApptId = Guid.Empty;
+            if (existing == null)
+            {
+                var e = new Entity("appointment");
+                if (!string.IsNullOrEmpty(globalId)) e["globalobjectid"] = globalId;
+                e["subject"] = appt.Subject ?? "";
+                try { e["scheduledstart"] = appt.Start; } catch { }
+                try { e["scheduledend"] = appt.End; } catch { }
+                if (regarding != null) e["regardingobjectid"] = regarding;
+                if (meId != Guid.Empty) e["ownerid"] = new EntityReference("systemuser", meId);
+
+                try
+                {
+                    crmApptId = org.Create(e);
+                    Logger.Info("[Appt] Created CRM appt: " + crmApptId);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Info("[Appt] Create EX: " + ex);
+                }
+            }
+            else
+            {
+                crmApptId = existing.Id;
+                // 5) Mise à jour du regarding si demandé
+                if (regarding != null)
+                {
+                    var upd = new Entity("appointment") { Id = existing.Id };
+                    upd["regardingobjectid"] = regarding;
+                    try { org.Update(upd); Logger.Info("[Appt] Updated CRM appt: " + existing.Id); }
+                    catch (Exception ex) { Logger.Info("[Appt] Update EX: " + ex); }
+                }
+            }
+
+            // 6) Tag UDF côté Outlook (fallback UserProperties si MAPI bloqué) + crmid s’il est connu
+            bool tagOk = OutlookApptTagger.TagAppointmentLinkWithDiagnostics(
+                appt,
+                crmApptId == Guid.Empty ? (Guid?)null : crmApptId,
+                regarding != null ? regarding.Id : Guid.Empty,
+                regardingDisplay ?? "",
+                MapEntityLogicalNameToObjectTypeCode(regarding != null ? regarding.LogicalName : null),
+                orgId,
+                ownerSmtp,
+                meId);
+
+            // 7) Feedback visuel dans le sujet (optionnel, simple)
             try
             {
-                string globalId = null;
-                try { globalId = appt.GlobalAppointmentID; } catch { }
-
-                var existing = FindCrmAppointmentByGlobalId(org, globalId);
-
-                var apptEntity = (existing == null)
-                    ? new Entity("appointment")
-                    : new Entity("appointment") { Id = existing.Id };
-
-                if (!string.IsNullOrEmpty(globalId))
-                    apptEntity["globalobjectid"] = globalId;
-
-                if (existing == null)
+                var suffix = tagOk ? "[UDF OK]" : "[UDF ERR]"; // ne change rien côté CRM
+                if ((appt.Subject ?? "").IndexOf(suffix, StringComparison.OrdinalIgnoreCase) < 0)
                 {
-                    apptEntity["subject"] = appt.Subject ?? "";
-                    var body = appt.Body;
-                    if (!string.IsNullOrEmpty(body)) apptEntity["description"] = body;
+                    appt.Subject = (appt.Subject ?? "") + " " + suffix;
+                    appt.Save();
+                    Logger.Info("[Appt] Subject tagged with " + suffix);
                 }
-
-                if (appt.Start != DateTime.MinValue) apptEntity["scheduledstart"] = appt.Start;
-                if (appt.End   != DateTime.MinValue) apptEntity["scheduledend"]   = appt.End;
-
-                if (regarding != null) apptEntity["regardingobjectid"] = regarding;
-
-                var meId = GetCurrentUserId(org);
-                if (meId != Guid.Empty)
-                {
-                    var organizer = new Entity("activityparty");
-                    organizer["participationtypemask"] = new OptionSetValue(7); // organizer
-                    organizer["partyid"] = new EntityReference("systemuser", meId);
-                    apptEntity["organizer"] = new EntityCollection(new List<Entity> { organizer }) { EntityName = "activityparty" };
-                }
-
-                Guid activityId;
-                if (existing == null)
-                {
-                    activityId = org.Create(apptEntity);
-                }
-                else
-                {
-                    org.Update(apptEntity);
-                    activityId = existing.Id;
-                }
-
-                try
-                {
-                    var mySmtp = GetCurrentUserSmtp(org);
-                    var myId   = GetCurrentUserId(org);
-
-                    string regardingDisplay = (regarding != null && !string.IsNullOrEmpty(regarding.Name))
-                                              ? regarding.Name
-                                              : TryGetRegardingDisplay(org, regarding);
-
-                    CrmMapiInterop.ApplyMsCompatForAppointment(
-                        appt,
-                        (regarding != null) ? regarding.Id : Guid.Empty,
-                        regardingDisplay ?? "",
-                        mySmtp,
-                        (myId != Guid.Empty) ? (Guid?)myId : null
-                    );
-                }
-                catch { }
-
-                try
-                {
-                    var insp = appt.GetInspector;
-                    if (insp != null)
-                        Globals.ThisAddIn.CreatePaneForAppointmentIfLinked(insp, appt);
-                } catch { }
             }
-            catch (Exception)
-            {
-            }
+            catch (Exception ex) { Logger.Info("[Appt] Subject tag EX: " + ex.Message); }
         }
+    
 
         public static void UnlinkOrDeleteCrmEmail(IOrganizationService org, Outlook.MailItem mi, bool deleteInCrm)
         {
@@ -250,13 +251,14 @@ namespace CrmRegardingAddin
             try
             {
                 string globalId = null; try { globalId = appt.GlobalAppointmentID; } catch { }
+                try { Logger.Info("[APPT] Unlink/Delete start GlobalAppointmentID=" + (globalId ?? "<null>")); } catch {}
                 var existing = FindCrmAppointmentByGlobalId(org, globalId, false);
                 if (existing != null && deleteInCrm)
                 {
-                    try { org.Delete("appointment", existing.Id); } catch { }
+                    try { org.Delete("appointment", existing.Id); Logger.Info("[APPT] Deleted CRM appointment ActivityId=" + existing.Id.ToString()); } catch { }
                 }
 
-                try { CrmMapiInterop.RemoveMsCompatFromAppointment(appt); } catch { }
+                try { CrmMapiInterop.RemoveMsCompatFromAppointment(appt); Logger.Info("[APPT] Removed MS compat named props from Outlook item"); } catch { }
 
                 try
                 {
@@ -536,20 +538,58 @@ namespace CrmRegardingAddin
         {
             try
             {
-                if (ae != null && ae.Type != null && ae.Type.Equals("EX", StringComparison.OrdinalIgnoreCase))
-                {
-                    var exUser = ae.GetExchangeUser();
-                    if (exUser != null && !string.IsNullOrEmpty(exUser.PrimarySmtpAddress))
-                        return exUser.PrimarySmtpAddress;
+                if (ae == null) return fallback;
 
-                    var exDL = ae.GetExchangeDistributionList();
-                    if (exDL != null && !string.IsNullOrEmpty(exDL.PrimarySmtpAddress))
-                        return exDL.PrimarySmtpAddress;
+                // 1) PR_SMTP_ADDRESS (0x39FE001E)
+                try
+                {
+                    var pa = ae.PropertyAccessor;
+                    if (pa != null)
+                    {
+                        const string PR_SMTP = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
+                        var val = pa.GetProperty(PR_SMTP) as string;
+                        if (!string.IsNullOrEmpty(val))
+                            return val;
+                    }
                 }
-                if (ae != null && !string.IsNullOrEmpty(ae.Address))
+                catch { /* ignore */ }
+
+                // 2) Exchange user / DL PrimarySmtpAddress
+                if (ae.Type != null && ae.Type.Equals("EX", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var exUser = ae.GetExchangeUser();
+                        if (exUser != null && !string.IsNullOrEmpty(exUser.PrimarySmtpAddress))
+                            return exUser.PrimarySmtpAddress;
+                    }
+                    catch { }
+                    try
+                    {
+                        var exDL = ae.GetExchangeDistributionList();
+                        if (exDL != null && !string.IsNullOrEmpty(exDL.PrimarySmtpAddress))
+                            return exDL.PrimarySmtpAddress;
+                    }
+                    catch { }
+                }
+
+                // 3) SMTP explicite
+                if (ae.Type != null && ae.Type.Equals("SMTP", StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrEmpty(ae.Address))
+                {
+                    return ae.Address;
+                }
+
+                // 4) Ne jamais retourner un DN X.500
+                if (!string.IsNullOrEmpty(ae.Address) && ae.Address.StartsWith("/O=", StringComparison.OrdinalIgnoreCase))
+                    return fallback;
+
+                // 5) Dernier recours : certains providers stockent la SMTP ici
+                if (!string.IsNullOrEmpty(ae.Address))
                     return ae.Address;
             }
             catch { }
+
             return fallback;
         }
 
@@ -581,7 +621,8 @@ namespace CrmRegardingAddin
             try
             {
                 var smtp = mi.SenderEmailAddress;
-                if (!string.IsNullOrEmpty(smtp)) return smtp;
+                if (!string.IsNullOrEmpty(smtp) && !smtp.StartsWith("/O=", StringComparison.OrdinalIgnoreCase))
+                    return smtp;
             }
             catch { }
 
@@ -616,23 +657,28 @@ namespace CrmRegardingAddin
             return FindCrmAppointmentByGlobalId(org, id, true);
         }
 
-        public static Entity FindCrmAppointmentByGlobalId(IOrganizationService org, string globalId, bool onlyIfLinked = true)
+    public static Entity FindCrmAppointmentByGlobalId(IOrganizationService org, string globalId, bool onlyIfLinked = true)
+    {
+        if (org == null || string.IsNullOrEmpty(globalId)) return null;
+
+        var qe = new QueryExpression("appointment")
         {
-            if (org == null || string.IsNullOrEmpty(globalId)) return null;
+            ColumnSet = new ColumnSet("activityid", "subject", "globalobjectid", "regardingobjectid")
+        };
+        qe.Criteria.AddCondition("globalobjectid", ConditionOperator.Equal, globalId);
+        if (onlyIfLinked)
+            qe.Criteria.AddCondition("regardingobjectid", ConditionOperator.NotNull);
 
-            var qe = new QueryExpression("appointment")
-            {
-                ColumnSet = new ColumnSet("activityid", "subject", "globalobjectid", "regardingobjectid")
-            };
-            qe.Criteria.AddCondition("globalobjectid", ConditionOperator.Equal, globalId);
-            if (onlyIfLinked)
-                qe.Criteria.AddCondition("regardingobjectid", ConditionOperator.NotNull);
-
+        try
+        {
             var res = org.RetrieveMultiple(qe);
-            return (res != null && res.Entities != null && res.Entities.Count > 0) ? res.Entities[0] : null;
+            var result = (res != null && res.Entities != null && res.Entities.Count > 0) ? res.Entities[0] : null;
+            Logger.Info(result == null ? "[Appt] RetrieveMultiple: 0" : "[Appt] RetrieveMultiple: found " + result.Id);
+            return result;
         }
-
-        private static Guid GetOrganizationId(IOrganizationService org)
+        catch (Exception ex) { Logger.Info("[Appt] RetrieveMultiple EX: " + ex.Message); return null; }
+    }
+    private static Guid GetOrganizationId(IOrganizationService org)
         {
             try
             {
@@ -650,24 +696,14 @@ namespace CrmRegardingAddin
             return Guid.Empty;
         }
 
-        private static string TryGetRegardingDisplay(IOrganizationService org, EntityReference er)
+        private static string TryGetRegardingDisplay(IOrganizationService org, EntityReference regarding)
         {
-            if (org == null || er == null) return null;
+            if (org == null || regarding == null) return null;
+            if (!string.IsNullOrEmpty(regarding.Name)) return regarding.Name;
             try
             {
-                string nameAttr = null;
-                switch (er.LogicalName)
-                {
-                    case "contact":     nameAttr = "fullname"; break;
-                    case "account":     nameAttr = "name";     break;
-                    case "lead":        nameAttr = "fullname"; break;
-                    case "opportunity": nameAttr = "name";     break;
-                    case "systemuser":  nameAttr = "fullname"; break;
-                    default:            nameAttr = null;       break;
-                }
-                if (nameAttr == null) return null;
-                var e = org.Retrieve(er.LogicalName, er.Id, new ColumnSet(nameAttr));
-                return e.GetAttributeValue<string>(nameAttr);
+                var e = org.Retrieve(regarding.LogicalName, regarding.Id, new ColumnSet("name", "fullname", "subject"));
+                return e.GetAttributeValue<string>("name") ?? e.GetAttributeValue<string>("fullname") ?? e.GetAttributeValue<string>("subject");
             }
             catch { return null; }
         }
@@ -677,13 +713,68 @@ namespace CrmRegardingAddin
             if (string.IsNullOrEmpty(logicalName)) return "";
             switch (logicalName)
             {
-                case "account":     return "1";
-                case "contact":     return "2";
+                case "account": return "1";
+                case "contact": return "2";
                 case "opportunity": return "3";
-                case "lead":        return "4";
-                case "systemuser":  return "8";
-                case "incident":    return "112";
+                case "lead": return "4";
+                case "systemuser": return "8";
+                case "incident": return "112";
                 default: return "";
+            }
+        }
+        private static class OutlookApptTagger
+        {
+            private const string Pfx = "http://schemas.microsoft.com/mapi/string/{00020329-0000-0000-C000-000000000046}/";
+
+            private static bool TrySetProperty(Outlook.PropertyAccessor pa, string name, object value, Outlook.UserProperties userProps)
+            {
+                try { pa.SetProperty(Pfx + name, value); Logger.Info("[UDF] Set OK: " + name); return true; }
+                catch (Exception ex)
+                {
+                    Logger.Info("[UDF] Set FAIL: " + name + " EX=" + ex.Message + " -> fallback UserProperty");
+                    try
+                    {
+                        var up = userProps[name] ?? userProps.Add(name, Outlook.OlUserPropertyType.olText);
+                        up.Value = value == null ? "" : value.ToString();
+                        Logger.Info("[UDF] Fallback OK: " + name);
+                        return true;
+                    }
+                    catch (Exception ex2)
+                    {
+                        Logger.Info("[UDF] Fallback FAIL: " + name + " EX=" + ex2.Message);
+                        return false;
+                    }
+                }
+            }
+
+            public static bool TagAppointmentLinkWithDiagnostics(
+                Outlook.AppointmentItem appt,
+                Guid? crmApptId,
+                Guid regardingId,
+                string regardingName,
+                string regardingOtc,
+                Guid orgId,
+                string ownerSmtp,
+                Guid ownerUserId)
+            {
+                bool ok = true;
+                try
+                {
+                    var pa = appt.PropertyAccessor;
+                    var ups = appt.UserProperties;
+                    if (crmApptId.HasValue) ok &= TrySetProperty(pa, "crmid", crmApptId.Value.ToString("B"), ups);
+                    ok &= TrySetProperty(pa, "crmlinkstate", 1.0, ups);
+                    ok &= TrySetProperty(pa, "crmorgid", orgId == Guid.Empty ? "" : orgId.ToString("B"), ups);
+                    ok &= TrySetProperty(pa, "crmownersmtp", ownerSmtp ?? "", ups);
+                    ok &= TrySetProperty(pa, "crmownersystemuserid", ownerUserId == Guid.Empty ? "" : ownerUserId.ToString("B"), ups);
+                    ok &= TrySetProperty(pa, "crmregardingobjectid", regardingId == Guid.Empty ? "" : regardingId.ToString("B"), ups);
+                    ok &= TrySetProperty(pa, "crmregardingobject", regardingName ?? "", ups);
+                    ok &= TrySetProperty(pa, "crmregardingobjecttypecode", regardingOtc ?? "", ups);
+                    try { appt.Save(); } catch { }
+                    Logger.Info("[Appt] Tag UDF done.");
+                    return ok;
+                }
+                catch (Exception ex) { Logger.Info("[Appt] Tag UDF EX: " + ex); return false; }
             }
         }
     }

@@ -10,6 +10,35 @@ namespace CrmRegardingAddin
 {
     public partial class CrmLinkPane : UserControl
     {
+
+        // --- Helpers UDF rendez-vous (C#6-compatible) ---
+        private sealed class ApptUdf
+        {
+        public string CrmId;
+            public double? LinkState;
+            public string OrgId, RegardingId, RegardingName, RegardingOtc, OwnerSmtp, OwnerUserId;
+        }
+
+        private ApptUdf ReadAppointmentUdf(Outlook.AppointmentItem appt)
+        {
+            try
+            {
+                if (appt == null) return null;
+                var pa = appt.PropertyAccessor;
+                object ls = null, rn = null, cid = null;
+                try { ls = pa.GetProperty("http://schemas.microsoft.com/mapi/string/{00020329-0000-0000-C000-000000000046}/crmlinkstate"); } catch { }
+                try { rn = pa.GetProperty("http://schemas.microsoft.com/mapi/string/{00020329-0000-0000-C000-000000000046}/crmregardingobject"); } catch { }
+                try { cid = pa.GetProperty("http://schemas.microsoft.com/mapi/string/{00020329-0000-0000-C000-000000000046}/crmid"); } catch { }
+                var u = new ApptUdf();
+                if (ls is double) u.LinkState = (double)ls;
+                u.RegardingName = rn as string;
+                u.CrmId = cid as string;
+                return u;
+            }
+            catch { return null; }
+        }        // --- fin helpers UDF ---
+
+
         private IOrganizationService _org;
         private Outlook.MailItem _mail;
         private Outlook.AppointmentItem _appt;
@@ -90,32 +119,82 @@ namespace CrmRegardingAddin
                 }
 
                 // ----- RDV -----
+
+
+                // ===== APPOINTMENT PATH =====
                 if (_appt != null)
                 {
                     var goid = _appt.GlobalAppointmentID ?? "";
-                    var appt = CrmActions.FindCrmAppointmentByGlobalObjectId(_org, goid);
-                    if (appt == null)
+                    Logger.Info("[Pane] Appt path, GlobalAppointmentID=" + goid);
+
+                    // 1) Essai CRM par globalobjectid
+                    Entity apptCrm = null;
+                    if (_org != null && !string.IsNullOrEmpty(goid))
                     {
-                        AddRow("Aucun rendez-vous CRM", "(non trouvé)", "", null);
+                        apptCrm = CrmActions.FindCrmAppointmentByGlobalObjectId(_org, goid);
+                    }
+
+                    if (apptCrm == null)
+                    {
+                        // 2) Fallback: UDF côté Outlook
+                        var udf = ReadAppointmentUdf(_appt);
+
+                        // Si un crmid est stocké, tenter un Retrieve direct
+                        Guid crmApptId;
+                        if (_org != null && udf != null && !string.IsNullOrEmpty(udf.CrmId)
+                            && Guid.TryParse(udf.CrmId.Trim('{', '}'), out crmApptId))
+                        {
+                            try
+                            {
+                                var e = _org.Retrieve("appointment", crmApptId,
+                                    new ColumnSet("subject", "regardingobjectid", "organizer", "requiredattendees", "optionalattendees"));
+                                AddRow("Rendez-vous (CRM)", e.GetAttributeValue<string>("subject") ?? "(sans objet)", "appointment",
+                                       new EntityReference("appointment", e.Id));
+
+                                var reg = e.GetAttributeValue<EntityReference>("regardingobjectid");
+                                if (reg != null) AddRow("Regarding", reg.Name ?? reg.LogicalName, reg.LogicalName, reg);
+
+                                AddPartyRows(e, "organizer");
+                                AddPartyRows(e, "requiredattendees");
+                                AddPartyRows(e, "optionalattendees");
+
+                                btnUnlink.Enabled = true;
+                                Logger.Info("[Pane] CRM appt retrieved by UDF crmid.");
+                                return;
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Info("[Pane] Retrieve by UDF crmid EX: " + ex.Message);
+                            }
+                        }
+
+                        // 3) Sinon afficher l'état "lié (en attente)" si UDF présent
+                        if (udf != null && (udf.LinkState ?? 0) >= 1.0)
+                        {
+                            AddRow("Rendez-vous lié (en attente sync)", udf.RegardingName ?? "(regarding)", "", null);
+                            Logger.Info("[Pane] Appt linked (pending SSS).");
+                        }
+                        else
+                        {
+                            AddRow("Aucun rendez-vous CRM", "(non trouvé)", "", null);
+                            Logger.Info("[Pane] Appt not linked.");
+                        }
                         return;
                     }
 
-                    AddRow("Rendez-vous (CRM)", appt.GetAttributeValue<string>("subject") ?? "(sans objet)", "appointment",
-                           new EntityReference("appointment", appt.Id));
+                    // 4) Affichage CRM normal
+                    AddRow("Rendez-vous (CRM)", apptCrm.GetAttributeValue<string>("subject") ?? "(sans objet)", "appointment",
+                           new EntityReference("appointment", apptCrm.Id));
 
-                    var reg = appt.GetAttributeValue<EntityReference>("regardingobjectid");
-                    if (reg != null)
-                    {
-                        // Affichage simple (nom seulement)
-                        var label = reg.Name ?? reg.LogicalName;
-                        AddRow("Regarding", label, reg.LogicalName, reg);
-                    }
+                    var reg2 = apptCrm.GetAttributeValue<EntityReference>("regardingobjectid");
+                    if (reg2 != null) AddRow("Regarding", reg2.Name ?? reg2.LogicalName, reg2.LogicalName, reg2);
 
-                    AddPartyRows(appt, "organizer");
-                    AddPartyRows(appt, "requiredattendees");
-                    AddPartyRows(appt, "optionalattendees");
+                    AddPartyRows(apptCrm, "organizer");
+                    AddPartyRows(apptCrm, "requiredattendees");
+                    AddPartyRows(apptCrm, "optionalattendees");
 
                     btnUnlink.Enabled = true;
+                    Logger.Info("[Pane] Appt found and displayed.");
                     return;
                 }
             }

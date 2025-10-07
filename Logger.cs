@@ -6,19 +6,41 @@ namespace CrmRegardingAddin
 {
     public static class Logger
     {
-        private static bool _enabled;
-        private static string _logPath;
+        private static readonly bool _enabled;
+        private static readonly string _logPath;
 
         static Logger()
         {
-            _enabled = ConfigurationManager.AppSettings["CrmAddin:VerboseLog"] == "true";
-            _logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CrmRegardingAddin", "crmaddin.log");
-            Directory.CreateDirectory(Path.GetDirectoryName(_logPath));
+            try
+            {
+                var enabled = ConfigurationManager.AppSettings["CrmAddin:VerboseLog"];
+                _enabled = string.Equals(enabled, "true", StringComparison.OrdinalIgnoreCase);
+
+                var configuredPath = ConfigurationManager.AppSettings["CrmAddin:LogFile"];
+                if (string.IsNullOrWhiteSpace(configuredPath))
+                {
+                    configuredPath = @"%LOCALAPPDATA%\CrmRegardingAddin\crmaddin.log";
+                }
+
+                var expanded = Environment.ExpandEnvironmentVariables(configuredPath);
+                var dir = Path.GetDirectoryName(expanded);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                _logPath = expanded;
+            }
+            catch
+            {
+                _enabled = false;
+                _logPath = null;
+            }
         }
 
         public static void Info(string message)
         {
-            if (!_enabled) return;
+            if (!_enabled || string.IsNullOrEmpty(_logPath)) return;
             try
             {
                 File.AppendAllText(_logPath, DateTime.Now.ToString("u") + " " + message + Environment.NewLine);
