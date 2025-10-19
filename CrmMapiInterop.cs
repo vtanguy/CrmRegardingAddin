@@ -1,327 +1,238 @@
-
-// CrmMapiInterop.cs
-// VS2015 + C#6 compatible
+// CrmMapiInterop.cs (robust write: string-named + ID-based)
+// Target: VS2015 + C#6
 using System;
-using System.Collections.Generic;
 using System.Text;
 using Outlook = Microsoft.Office.Interop.Outlook;
-using System.Security;
-
 
 namespace CrmRegardingAddin
 {
     public static class CrmMapiInterop
     {
-        private const string DASL_BASE = "http://schemas.microsoft.com/mapi/string/{00020329-0000-0000-C000-000000000046}/";
+        // === PS_PUBLIC_STRINGS base ===
+        private const string PS_PUBLIC_STRINGS = "{00020329-0000-0000-C000-000000000046}";
+        private static string DASL_String(string name) { return "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/" + name; }
+        private static string DASL_Id(string hex)     { return "http://schemas.microsoft.com/mapi/id/"     + PS_PUBLIC_STRINGS + "/" + hex; }
 
-        // UDF alignées sur ce que lit CrmLinkPane
-        private const string P_LINKSTATE = "crmlinkstate";
-        private const string P_CRMID       = "crmid"; // GUID CRM de l’activité (avec accolades)
+        // === Canonical string names (as observed in Microsoft add-in) ===
+        // We will write both the *lowercase* and *camelCase* variants to guarantee mapping.
+        private const string P_LINKSTATE_LOWER   = "crmlinkstate";
+        private const string P_LINKSTATE_CAMEL   = "crmLinkState";
+        private const string P_REGID_LOWER       = "crmregardingobjectid";
+        private const string P_REGID_CAMEL       = "crmRegardingObjectId";
+        private const string P_REGOT_LOWER       = "crmregardingobjecttypecode";
+        private const string P_REGOT_CAMEL       = "crmRegardingObjectTypeCode";
+        private const string P_CRMID_LOWER       = "crmid";
+        private const string P_CRMID_CAMEL       = "crmId";
+        private const string P_ORGID_LOWER       = "crmorgid";
+        private const string P_ORGID_CAMEL       = "crmOrgId";
+        private const string P_SSSPROMOTE        = "crmSssPromoteTracker"; // same in lower/camel in the wild
+        private const string P_TRACKEDBY         = "crmTrackedBySender";
+        private const string P_OBJTYPE_CAMEL     = "crmObjectTypeCode";    // appt only
+        private const string P_ENTRYID_CAMEL     = "crmEntryID";           // appt only
 
-        private const string P_SSS_TRACK = "crmSssPromoteTracker"; // on NE l’utilisera PAS pour les RDV
-        private const string P_REGARDINGID = "crmregardingobjectid";
-        private const string P_REGARDINGOT = "crmregardingobjecttypecode";
-        private const string P_REGARDING = "crmregardingobject";
-        private const string P_ORGID = "crmorgid";
-        private const string P_PARTYINFO = "crmpartyinfo";
-        private const string P_OWNER_SMTP = "crmownersmtp";
-        private const string P_OWNER_SYSID = "crmownersystemuserid";
+        // === Known ID tags (these may or may not be mapped in a given store) ===
+        private static readonly string DASL_crmLinkState   = DASL_Id("0x80C8"); // PT_DOUBLE
+        private static readonly string DASL_crmRegardingId = DASL_Id("0x80C9"); // PT_UNICODE
+        private static readonly string DASL_crmRegardingOT = DASL_Id("0x80CA"); // PT_UNICODE
+        private static readonly string DASL_crmid          = DASL_Id("0x80C4"); // PT_UNICODE
+        private static readonly string DASL_crmorgid       = DASL_Id("0x80C5"); // PT_UNICODE
+        private static readonly string DASL_crmAsyncSend   = DASL_Id("0x80D7"); // PT_DOUBLE
+        private static readonly string DASL_crmSssPromote  = DASL_Id("0x80DE"); // PT_LONG
+        private static readonly string DASL_crmTrackedBy   = DASL_Id("0x80DF"); // PT_BOOLEAN
+        private static readonly string DASL_crmObjectType  = DASL_Id("0x80D1"); // PT_DOUBLE (appt)
+        private static readonly string DASL_crmEntryID     = DASL_Id("0x80C3"); // PT_UNICODE (appt)
 
-        private static string N(string name) { return DASL_BASE + name; }
+        private static readonly string DASL_crmRegardingVT = DASL_Id("0x80CB"); // PT_UNICODE
 
-        public class CrmPartyMember
+        // === Safe helpers ===
+        private static void TrySet(Outlook.PropertyAccessor pa, string dasl, object value)
         {
-            public string Email { get; set; }
-            public Guid? PartyId { get; set; }
-            public int? TypeCode { get; set; }
-            public string Name { get; set; }
+            if (pa == null || string.IsNullOrEmpty(dasl)) return;
+            try { pa.SetProperty(dasl, value); } catch { }
+        }
+        private static void TryDelete(Outlook.PropertyAccessor pa, string dasl)
+        {
+            if (pa == null || string.IsNullOrEmpty(dasl)) return;
+            try { pa.DeleteProperty(dasl); } catch { }
+        }
+        private static void SetBoth(Outlook.PropertyAccessor pa, string idDasl, string nameLower, string nameCamel, object value)
+        {
+            // Write string-named first (guarantees mapping), then ID (if mapped to expected tag it will succeed)
+            TrySet(pa, DASL_String(nameLower), value);
+            if (!string.Equals(nameLower, nameCamel, StringComparison.Ordinal))
+                TrySet(pa, DASL_String(nameCamel), value);
+            TrySet(pa, idDasl, value);
+        }
+        private static void DeleteBoth(Outlook.PropertyAccessor pa, string idDasl, string nameLower, string nameCamel)
+        {
+            TryDelete(pa, idDasl);
+            TryDelete(pa, DASL_String(nameLower));
+            if (!string.Equals(nameLower, nameCamel, StringComparison.Ordinal))
+                TryDelete(pa, DASL_String(nameCamel));
         }
 
-        private static string ToUnbracedLower(Guid id)
-        {
-            return id == Guid.Empty ? "" : id.ToString("D").ToLowerInvariant();
-        }
-
-
-        public static void ApplyMsCompatForMail(
-            Outlook.MailItem mail,
-            string regardingLogicalNameOrCode,
-            Guid regardingId,
-            string regardingDisplayName,
-            string systemUserEmail,
-            Guid? systemUserId,
-            CrmPartyMember fromMember,
-            IEnumerable<CrmPartyMember> recipients,
-            bool isIncoming,
-            Guid orgId
-        )
-        {
-            if (mail == null) return;
-
-            var pa = mail.PropertyAccessor;
-
-            TrySet(pa, N(P_LINKSTATE), 2.0);
-            // (disabled) TrySet(pa, N(P_SSS_TRACK), 0); // avoid SSS duplicate promotion for appointments
-            if (regardingId != Guid.Empty)
-                TrySet(pa, N(P_REGARDINGID), ToBracedUpper(regardingId));
-
-            int apTypeCode; if (!string.IsNullOrEmpty(regardingLogicalNameOrCode) && int.TryParse(regardingLogicalNameOrCode, out apTypeCode)) TrySet(pa, N(P_REGARDINGOT), apTypeCode.ToString());
-
-            if (!string.IsNullOrEmpty(regardingDisplayName))
-                TrySet(pa, N(P_REGARDING), regardingDisplayName);
-
-            if (orgId != Guid.Empty)
-                TrySet(pa, N(P_ORGID), ToBracedUpper(orgId));
-
-            string xml = BuildCrmPartyInfoXmlForMail(systemUserEmail, systemUserId, fromMember, recipients, isIncoming);
-            if (!string.IsNullOrEmpty(xml))
-                TrySet(pa, N(P_PARTYINFO), xml);
-
-            try { mail.Save(); } catch { }
-        }
-
+        // === Public: remove legacy string-named props that Microsoft used historically ===
         public static void RemoveMsCompatFromMail(Outlook.MailItem mail)
         {
             if (mail == null) return;
             var pa = mail.PropertyAccessor;
-            TryDelete(pa, N(P_LINKSTATE));
-            TryDelete(pa, N(P_SSS_TRACK));
-            TryDelete(pa, N(P_REGARDINGID));
-            TryDelete(pa, N(P_REGARDINGOT));
-            TryDelete(pa, N(P_REGARDING));
-            TryDelete(pa, N(P_ORGID));
-            TryDelete(pa, N(P_PARTYINFO));
-            try { mail.Save(); } catch { }
-        }
-
-        public static void ApplyMsCompatForAppointment(
-            Outlook.AppointmentItem appt,
-            Guid regardingId,
-            string regardingDisplayName,
-            string regardingLogicalNameOrCode,
-            Guid orgId,
-            string organizerSmtp,
-            Guid? organizerSystemUserId)
-        {
-            if (appt == null) return;
-            var pa = appt.PropertyAccessor;
-
-            // 1) Indiquer le lien (le panneau lit 'crmlinkstate')
-            TrySet(pa, N(P_LINKSTATE), 2.0);
-
-            // 2) NE PAS bloquer SSS : surtout ne pas mettre crmSssPromoteTracker=0
-            // TrySet(pa, N(P_SSS_TRACK), 0); // ❌ à NE PAS faire pour les rendez-vous
-
-            // 3) Regarding
-            if (regardingId != Guid.Empty)
-                TrySet(pa, N(P_REGARDINGID), ToBracedUpper(regardingId));
-
-            int typeCode;
-            if (!string.IsNullOrEmpty(regardingLogicalNameOrCode) && int.TryParse(regardingLogicalNameOrCode, out typeCode))
-                TrySet(pa, N(P_REGARDINGOT), typeCode.ToString());
-
-            if (!string.IsNullOrEmpty(regardingDisplayName))
-                TrySet(pa, N(P_REGARDING), regardingDisplayName);
-
-            if (orgId != Guid.Empty)
-                TrySet(pa, N(P_ORGID), ToBracedUpper(orgId));
-
-            // 4) Infos d’organisateur attendues par le panneau (et utiles côté add-in MS)
-            if (!string.IsNullOrEmpty(organizerSmtp))
-                TrySet(pa, N(P_OWNER_SMTP), organizerSmtp);
-            if (organizerSystemUserId.HasValue && organizerSystemUserId.Value != Guid.Empty)
-                TrySet(pa, N(P_OWNER_SYSID), ToBracedUpper(organizerSystemUserId.Value));
-
-            // 5) XML PartyInfo (organizer/required/optional selon ton implémentation)
-            string xml = BuildCrmPartyInfoXmlForAppointment(organizerSmtp, organizerSystemUserId);
-            if (!string.IsNullOrEmpty(xml))
-                TrySet(pa, N(P_PARTYINFO), xml);
-
-            try { appt.Save(); } catch { }
+            DeleteBoth(pa, DASL_crmLinkState,   P_LINKSTATE_LOWER, P_LINKSTATE_CAMEL);
+            DeleteBoth(pa, DASL_crmSssPromote,  P_SSSPROMOTE,      P_SSSPROMOTE);
+            DeleteBoth(pa, DASL_crmRegardingId, P_REGID_LOWER,     P_REGID_CAMEL);
+            DeleteBoth(pa, DASL_crmRegardingOT, P_REGOT_LOWER,     P_REGOT_CAMEL);
+            DeleteBoth(pa, DASL_crmorgid,       P_ORGID_LOWER,     P_ORGID_CAMEL);
+            DeleteBoth(pa, DASL_crmid,          P_CRMID_LOWER,     P_CRMID_CAMEL);
+            DeleteBoth(pa, DASL_crmTrackedBy,   P_TRACKEDBY,       P_TRACKEDBY);
         }
 
         public static void RemoveMsCompatFromAppointment(Outlook.AppointmentItem appt)
         {
             if (appt == null) return;
             var pa = appt.PropertyAccessor;
-            TryDelete(pa, N(P_LINKSTATE));
-            TryDelete(pa, N(P_SSS_TRACK));
-            TryDelete(pa, N(P_REGARDINGID));
-            TryDelete(pa, N(P_REGARDINGOT));
-            TryDelete(pa, N(P_REGARDING));
-            TryDelete(pa, N(P_PARTYINFO));
+            DeleteBoth(pa, DASL_crmLinkState,   P_LINKSTATE_LOWER, P_LINKSTATE_CAMEL);
+            DeleteBoth(pa, DASL_crmSssPromote,  P_SSSPROMOTE,      P_SSSPROMOTE);
+            DeleteBoth(pa, DASL_crmRegardingId, P_REGID_LOWER,     P_REGID_CAMEL);
+            DeleteBoth(pa, DASL_crmRegardingOT, P_REGOT_LOWER,     P_REGOT_CAMEL);
+            DeleteBoth(pa, DASL_crmorgid,       P_ORGID_LOWER,     P_ORGID_CAMEL);
+            DeleteBoth(pa, DASL_crmid,          P_CRMID_LOWER,     P_CRMID_CAMEL);
+            DeleteBoth(pa, DASL_crmTrackedBy,   P_TRACKEDBY,       P_TRACKEDBY);
+            DeleteBoth(pa, DASL_crmObjectType,  P_OBJTYPE_CAMEL,   P_OBJTYPE_CAMEL);
+            DeleteBoth(pa, DASL_crmEntryID,     P_ENTRYID_CAMEL,   P_ENTRYID_CAMEL);
+        }
+
+        // === Public: set stamps "à la Microsoft" — write string + id
+        public static void SetCrmLinkPropsForMail(Outlook.MailItem mi, Guid regardingId, int regardingTypeCode, Guid? crmId, Guid? orgId)
+        {
+            if (mi == null) return;
+            var pa = mi.PropertyAccessor;
+
+            SetBoth(pa, DASL_crmRegardingId, P_REGID_LOWER, P_REGID_CAMEL, "{" + regardingId.ToString().ToUpper() + "}");
+            SetBoth(pa, DASL_crmRegardingOT, P_REGOT_LOWER, P_REGOT_CAMEL, regardingTypeCode.ToString());
+            SetBoth(pa, DASL_crmSssPromote,  P_SSSPROMOTE,  P_SSSPROMOTE,  1);
+            SetBoth(pa, DASL_crmTrackedBy,   P_TRACKEDBY,   P_TRACKEDBY,   false);
+
+            if (crmId.HasValue)
+                SetBoth(pa, DASL_crmid,     P_CRMID_LOWER,  P_CRMID_CAMEL,  "{" + crmId.Value.ToString().ToUpper() + "}");
+            if (orgId.HasValue)
+                SetBoth(pa, DASL_crmorgid,  P_ORGID_LOWER,  P_ORGID_CAMEL,  "{" + orgId.Value.ToString().ToUpper() + "}");
+
+            // LinkState at the end (1.0 soft / 2.0 hard)
+            SetBoth(pa, DASL_crmLinkState, P_LINKSTATE_LOWER, P_LINKSTATE_CAMEL, crmId.HasValue ? 2.0 : 1.0);
+
+            try { mi.Save(); } catch { }
+        }
+
+        public static void SetCrmLinkPropsForAppointment(Outlook.AppointmentItem appt, Guid regardingId, int regardingTypeCode, Guid? crmId, Guid? orgId, string entryId = null)
+        {
+            if (appt == null) return;
+            var pa = appt.PropertyAccessor;
+
+            SetBoth(pa, DASL_crmRegardingId, P_REGID_LOWER, P_REGID_CAMEL, "{" + regardingId.ToString().ToUpper() + "}");
+            SetBoth(pa, DASL_crmRegardingOT, P_REGOT_LOWER, P_REGOT_CAMEL, regardingTypeCode.ToString());
+            SetBoth(pa, DASL_crmSssPromote,  P_SSSPROMOTE,  P_SSSPROMOTE,  1);
+            SetBoth(pa, DASL_crmTrackedBy,   P_TRACKEDBY,   P_TRACKEDBY,   false);
+            SetBoth(pa, DASL_crmObjectType,  P_OBJTYPE_CAMEL, P_OBJTYPE_CAMEL, 4201.0);
+            if (!string.IsNullOrEmpty(entryId))
+                SetBoth(pa, DASL_crmEntryID, P_ENTRYID_CAMEL, P_ENTRYID_CAMEL, entryId);
+
+            if (crmId.HasValue)
+                SetBoth(pa, DASL_crmid,     P_CRMID_LOWER,  P_CRMID_CAMEL,  "{" + crmId.Value.ToString().ToUpper() + "}");
+            if (orgId.HasValue)
+                SetBoth(pa, DASL_crmorgid,  P_ORGID_LOWER,  P_ORGID_CAMEL,  "{" + orgId.Value.ToString().ToUpper() + "}");
+
+            SetBoth(pa, DASL_crmLinkState, P_LINKSTATE_LOWER, P_LINKSTATE_CAMEL, crmId.HasValue ? 2.0 : 1.0);
+
             try { appt.Save(); } catch { }
         }
 
-        private static void TrySet(Outlook.PropertyAccessor pa, string dasl, object value)
+        // === Public: full removal (ID + string) ===
+        public static void RemoveCrmLinkProps(Outlook.MailItem mi)
         {
-            try { pa.SetProperty(dasl, value); } catch { }
+            if (mi == null) return;
+            var pa = mi.PropertyAccessor;
+            DeleteBoth(pa, DASL_crmLinkState,   P_LINKSTATE_LOWER, P_LINKSTATE_CAMEL);
+            DeleteBoth(pa, DASL_crmRegardingId, P_REGID_LOWER,     P_REGID_CAMEL);
+            DeleteBoth(pa, DASL_crmRegardingOT, P_REGOT_LOWER,     P_REGOT_CAMEL);
+            DeleteBoth(pa, DASL_crmid,          P_CRMID_LOWER,     P_CRMID_CAMEL);
+            DeleteBoth(pa, DASL_crmorgid,       P_ORGID_LOWER,     P_ORGID_CAMEL);
+            DeleteBoth(pa, DASL_crmAsyncSend,   P_SSSPROMOTE,      P_SSSPROMOTE); // cleanup
+            DeleteBoth(pa, DASL_crmSssPromote,  P_SSSPROMOTE,      P_SSSPROMOTE);
+            DeleteBoth(pa, DASL_crmTrackedBy,   P_TRACKEDBY,       P_TRACKEDBY);
+            try { mi.Save(); } catch { }
         }
 
-        private static void TryDelete(Outlook.PropertyAccessor pa, string dasl)
+        public static void RemoveCrmLinkProps(Outlook.AppointmentItem appt)
         {
-            try { pa.DeleteProperty(dasl); } catch { }
+            if (appt == null) return;
+            var pa = appt.PropertyAccessor;
+            DeleteBoth(pa, DASL_crmLinkState,   P_LINKSTATE_LOWER, P_LINKSTATE_CAMEL);
+            DeleteBoth(pa, DASL_crmRegardingId, P_REGID_LOWER,     P_REGID_CAMEL);
+            DeleteBoth(pa, DASL_crmRegardingOT, P_REGOT_LOWER,     P_REGOT_CAMEL);
+            DeleteBoth(pa, DASL_crmid,          P_CRMID_LOWER,     P_CRMID_CAMEL);
+            DeleteBoth(pa, DASL_crmorgid,       P_ORGID_LOWER,     P_ORGID_CAMEL);
+            DeleteBoth(pa, DASL_crmEntryID,     P_ENTRYID_CAMEL,   P_ENTRYID_CAMEL);
+            DeleteBoth(pa, DASL_crmObjectType,  P_OBJTYPE_CAMEL,   P_OBJTYPE_CAMEL);
+            DeleteBoth(pa, DASL_crmAsyncSend,   P_SSSPROMOTE,      P_SSSPROMOTE);
+            DeleteBoth(pa, DASL_crmSssPromote,  P_SSSPROMOTE,      P_SSSPROMOTE);
+            DeleteBoth(pa, DASL_crmTrackedBy,   P_TRACKEDBY,       P_TRACKEDBY);
+            try { appt.Save(); } catch { }
         }
 
-        private static string ToBracedUpper(Guid id)
+        // === Diagnostics ===
+        private static string ReadProp(Outlook.PropertyAccessor pa, string dasl)
         {
-            return "{" + id.ToString().ToUpper() + "}";
+            if (pa == null || string.IsNullOrEmpty(dasl)) return "(n/a)";
+            try { var v = pa.GetProperty(dasl); return v == null ? "(null)" : v.ToString(); }
+            catch { return "(absent)"; }
+        }
+        private static string ReadPropAny(Outlook.PropertyAccessor pa, string idDasl, params string[] names)
+        {
+            var v = ReadProp(pa, idDasl);
+            if (v != "(absent)" && v != "(n/a)") return v;
+            for (int i = 0; i < names.Length; i++)
+            {
+                var vv = ReadProp(pa, DASL_String(names[i]));
+                if (vv != "(absent)" && vv != "(n/a)") return vv;
+            }
+            return v;
         }
 
-        private static string X(string s)
+        public static string DumpCrmProps(Outlook.MailItem mi)
         {
-            if (string.IsNullOrEmpty(s)) return "";
-            return s.Replace("&", "&amp;").Replace("\"", "&quot;").Replace("<", "&lt;").Replace(">", "&gt;");
-        }
-
-        private static string BuildCrmPartyInfoXmlForMail(
-            string systemUserEmail,
-            Guid? systemUserId,
-            CrmPartyMember fromMember,
-            IEnumerable<CrmPartyMember> recipients,
-            bool isIncoming)
-        {
-            // Schéma attendu par l’addin Microsoft (vu dans tes dumps MFCMAPI) :
-            // <PartyMembers Version="1.0">
-            //   <Member Email="..." PartyId="optional" TypeCode="8 or -1" Name="..." />
-            //   ...
-            // </PartyMembers>
-            //
-            // - systemuser => TypeCode="8", PartyId = GUID sans accolades, en minuscules
-            // - autres adresses => TypeCode renseigné si connu (contact=2, account=1, lead=4...), sinon -1
-            // - Name doit être non vide (fallback = email)
-
+            if (mi == null) return "Aucun MailItem.";
+            var pa = mi.PropertyAccessor;
             var sb = new StringBuilder();
-            sb.Append("<PartyMembers Version=\"1.0\">");
+            sb.AppendLine("=== CRM UDF (Mail) — PS_PUBLIC_STRINGS ===");
+            sb.AppendLine("crmlinkstate (0x80C8, PT_DOUBLE)       = " + ReadPropAny(pa, DASL_crmLinkState, P_LINKSTATE_LOWER, P_LINKSTATE_CAMEL));
+            sb.AppendLine("crmregardingobjectid (0x80C9, PT_UNI)  = " + ReadPropAny(pa, DASL_crmRegardingId, P_REGID_LOWER, P_REGID_CAMEL));
+            sb.AppendLine("crmregardingobjecttypecode (0x80CA)    = " + ReadPropAny(pa, DASL_crmRegardingOT, P_REGOT_LOWER, P_REGOT_CAMEL));
+            sb.AppendLine("crmid (0x80C4, PT_UNI)                 = " + ReadPropAny(pa, DASL_crmid, P_CRMID_LOWER, P_CRMID_CAMEL));
+            sb.AppendLine("crmorgid (0x80C5, PT_UNI)              = " + ReadPropAny(pa, DASL_crmorgid, P_ORGID_LOWER, P_ORGID_CAMEL));
+            sb.AppendLine("crmSssPromoteTracker (0x80DE, PT_LONG) = " + ReadPropAny(pa, DASL_crmSssPromote, P_SSSPROMOTE));
+            sb.AppendLine("crmTrackedBySender (0x80DF, PT_BOOL)   = " + ReadPropAny(pa, DASL_crmTrackedBy, P_TRACKEDBY));
 
-            Action<CrmPartyMember> writeMember = member =>
-            {
-                if (member == null) return;
-
-                var email = (member.Email ?? "").Trim();
-                if (email.Length == 0) return;
-
-                int typeCode = member.TypeCode ?? -1;
-                Guid? partyId = member.PartyId;
-
-                var safeName = string.IsNullOrWhiteSpace(member.Name) ? email : member.Name;
-                string partyIdAttr = "";
-                if (partyId.HasValue && partyId.Value != Guid.Empty)
-                {
-                    // IMPORTANT: pas d’accolades, en minuscules
-                    partyIdAttr = $" PartyId=\"{ToUnbracedLower(partyId.Value)}\"";
-                }
-
-                sb.Append("<Member");
-                sb.Append($" Email=\"{SecurityElement.Escape(email)}\"");
-                sb.Append(partyIdAttr);
-                sb.Append($" TypeCode=\"{typeCode}\"");
-                sb.Append($" Name=\"{SecurityElement.Escape(safeName)}\"");
-                sb.Append(" />");
-            };
-
-            // 1) FROM / TO selon entrant/sortant
-            if (isIncoming)
-            {
-                // Entrant: FROM = expéditeur SMTP
-                writeMember(fromMember);
-
-                // TO = systemuser (TypeCode=8, avec PartyId si dispo)
-                var systemUserMember = BuildSystemUserMember(systemUserEmail, systemUserId);
-                writeMember(systemUserMember);
-            }
-            else
-            {
-                // Sortant: FROM = systemuser (TypeCode=8)
-                var systemUserMember = BuildSystemUserMember(systemUserEmail, systemUserId);
-                writeMember(systemUserMember);
-
-                // TO = destinataires (TypeCode=-1, pas de PartyId)
-                if (recipients != null)
-                {
-                    foreach (var r in recipients)
-                    {
-                        writeMember(r);
-                    }
-                }
-            }
-
-            sb.Append("</PartyMembers>");
+            sb.AppendLine("regarding (string)                     = " + ReadPropAny(pa, DASL_crmRegardingVT, "Regarding", "regarding"));
             return sb.ToString();
         }
 
-        private static CrmPartyMember BuildSystemUserMember(string email, Guid? systemUserId)
+        public static string DumpCrmProps(Outlook.AppointmentItem appt)
         {
-            if (string.IsNullOrWhiteSpace(email)) return null;
-            return new CrmPartyMember
-            {
-                Email = email,
-                Name = email,
-                PartyId = systemUserId,
-                TypeCode = 8
-            };
-        }
+            if (appt == null) return "Aucun AppointmentItem.";
+            var pa = appt.PropertyAccessor;
+            var sb = new StringBuilder();
+            sb.AppendLine("=== CRM UDF (Appointment) — PS_PUBLIC_STRINGS ===");
+            sb.AppendLine("crmlinkstate (0x80C8, PT_DOUBLE)       = " + ReadPropAny(pa, DASL_crmLinkState, P_LINKSTATE_LOWER, P_LINKSTATE_CAMEL));
+            sb.AppendLine("crmregardingobjectid (0x80C9, PT_UNI)  = " + ReadPropAny(pa, DASL_crmRegardingId, P_REGID_LOWER, P_REGID_CAMEL));
+            sb.AppendLine("crmregardingobjecttypecode (0x80CA)    = " + ReadPropAny(pa, DASL_crmRegardingOT, P_REGOT_LOWER, P_REGOT_CAMEL));
+            sb.AppendLine("crmid (0x80C4, PT_UNI)                 = " + ReadPropAny(pa, DASL_crmid, P_CRMID_LOWER, P_CRMID_CAMEL));
+            sb.AppendLine("crmorgid (0x80C5, PT_UNI)              = " + ReadPropAny(pa, DASL_crmorgid, P_ORGID_LOWER, P_ORGID_CAMEL));
+            sb.AppendLine("crmObjectTypeCode (0x80D1, PT_DOUBLE)  = " + ReadPropAny(pa, DASL_crmObjectType, P_OBJTYPE_CAMEL));
+            sb.AppendLine("crmEntryID (0x80C3, PT_UNI)            = " + ReadPropAny(pa, DASL_crmEntryID, P_ENTRYID_CAMEL));
+            sb.AppendLine("crmSssPromoteTracker (0x80DE, PT_LONG) = " + ReadPropAny(pa, DASL_crmSssPromote, P_SSSPROMOTE));
+            sb.AppendLine("crmTrackedBySender (0x80DF, PT_BOOL)   = " + ReadPropAny(pa, DASL_crmTrackedBy, P_TRACKEDBY));
 
-        private static string BuildCrmPartyInfoXmlForAppointment(string organizerSmtp, Guid? organizerSystemUserId)
-        {
-            var sb = new System.Text.StringBuilder();
-            sb.Append("<PartyMembers Version=\"1.0\">");
-
-            string partyId = (organizerSystemUserId.HasValue && organizerSystemUserId.Value != Guid.Empty)
-                ? ToBracedUpper(organizerSystemUserId.Value)
-                : "";
-            string email = organizerSmtp ?? "";
-
-            sb.AppendFormat("<Member Email=\"{0}\" PartyId=\"{1}\" TypeCode=\"8\" Name=\"\" ParticipationType=\"5\" />",
-                X(email), X(partyId));
-            sb.AppendFormat("<Member Email=\"{0}\" PartyId=\"{1}\" TypeCode=\"8\" Name=\"\" ParticipationType=\"7\" />",
-                X(email), X(partyId));
-
-            sb.Append("</PartyMembers>");
+            sb.AppendLine("regarding (string)                     = " + ReadPropAny(pa, DASL_crmRegardingVT, "Regarding", "regarding"));
             return sb.ToString();
         }
-
-    
-
-    public static void TagAfterCrmAppointmentCreate(
-    Outlook.AppointmentItem appt,
-    Guid crmApptId,
-    Guid regardingId,
-    string regardingDisplayName,
-    string regardingLogicalNameOrCode,
-    Guid orgId,
-    string ownerSmtp,
-    Guid? ownerSystemUserId)
-{
-    if (appt == null) return;
-    var pa = appt.PropertyAccessor;
-
-    TrySet(pa, N(P_LINKSTATE), 2.0);
-
-    if (crmApptId != Guid.Empty)
-        TrySet(pa, N(P_CRMID), ToBracedUpper(crmApptId));
-
-    if (regardingId != Guid.Empty)
-        TrySet(pa, N(P_REGARDINGID), ToBracedUpper(regardingId));
-
-    int typeCode;
-    if (!string.IsNullOrEmpty(regardingLogicalNameOrCode) && int.TryParse(regardingLogicalNameOrCode, out typeCode))
-        TrySet(pa, N(P_REGARDINGOT), typeCode.ToString());
-
-    if (!string.IsNullOrEmpty(regardingDisplayName))
-        TrySet(pa, N(P_REGARDING), regardingDisplayName);
-
-    if (orgId != Guid.Empty)
-        TrySet(pa, N(P_ORGID), ToBracedUpper(orgId));
-
-    if (!string.IsNullOrEmpty(ownerSmtp))
-        TrySet(pa, N(P_OWNER_SMTP), ownerSmtp);
-    if (ownerSystemUserId.HasValue && ownerSystemUserId.Value != Guid.Empty)
-        TrySet(pa, N(P_OWNER_SYSID), ToBracedUpper(ownerSystemUserId.Value));
-
-    try { appt.Save(); } catch { }
-}
-}
-
-
+    }
 }

@@ -2,34 +2,104 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Windows.Forms;
-using System.Threading;
-using System.Threading.Tasks;
 using Office = Microsoft.Office.Core;
 using Outlook = Microsoft.Office.Interop.Outlook;
 using Microsoft.Office.Tools;
 using Microsoft.Xrm.Sdk;
 using WinFormsTimer = System.Windows.Forms.Timer;
 
-
 namespace CrmRegardingAddin
 {
     public partial class ThisAddIn
     {
-        private Dictionary<Outlook.Inspector, CustomTaskPane> _crmPanes = new Dictionary<Outlook.Inspector, CustomTaskPane>();
+        // === LinkState DASL constants (for gating pane display) ===
+        private const string PS_PUBLIC_STRINGS = "{00020329-0000-0000-C000-000000000046}";
+        private const string DASL_LinkState_String = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmlinkstate";
+        private const string DASL_LinkState_String_Camel = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmLinkState";
+        private const string DASL_LinkState_Id     = "http://schemas.microsoft.com/mapi/id/"     + PS_PUBLIC_STRINGS + "/0x80C8";
+
+        private static bool IsLinkedByLinkState(object item)
+        {
+            if (item == null) return false;
+            Outlook.PropertyAccessor pa = null;
+            try
+            {
+                var mi = item as Outlook.MailItem;
+                if (mi != null) pa = mi.PropertyAccessor;
+                var ap = item as Outlook.AppointmentItem;
+                if (ap != null) pa = ap.PropertyAccessor;
+            }
+            catch { }
+            if (pa == null) return false;
+
+            try
+            {
+                object o = null;
+                // 1) string-named lowercase
+                try { o = pa.GetProperty(DASL_LinkState_String); } catch { }
+                // 2) id-based
+                if (o == null) { try { o = pa.GetProperty(DASL_LinkState_Id); } catch { } }
+                // 3) string-named camelCase
+                if (o == null) { try { o = pa.GetProperty(DASL_LinkState_String_Camel); } catch { } }
+                if (o == null) return false;
+
+                double d;
+                if (o is double) d = (double)o;
+                else if (o is float) d = (float)o;
+                else if (o is int) d = (int)o;
+                else
+                {
+                    double tmp = 0.0;
+                    var s = o as string;
+                    if (s != null)
+                    {
+                        // Try current UI culture then invariant
+                        if (!double.TryParse(s, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.CurrentCulture, out tmp) &&
+                            !double.TryParse(s, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out tmp))
+                            return false;
+                        d = tmp;
+                    }
+                    else
+                    {
+                        var f = o as IFormattable;
+                        if (f != null)
+                        {
+                            var fs = f.ToString(null, System.Globalization.CultureInfo.InvariantCulture);
+                            if (!double.TryParse(fs, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out tmp))
+                                return false;
+                            d = tmp;
+                        }
+                        else
+                        {
+                            try { d = Convert.ToDouble(o, System.Globalization.CultureInfo.InvariantCulture); }
+                            catch { return false; }
+                        }
+                    }
+                }
+                return d > 0.0;
+            }
+            catch { return false; }
+        }
+
+        private readonly Dictionary<Outlook.Inspector, CustomTaskPane> _crmPanes = new Dictionary<Outlook.Inspector, CustomTaskPane>();
         private Outlook.Inspectors _inspectors;
         private bool _attemptedStartupConnect = false;
         private IOrganizationService _startupSvcPending;
         private WinFormsTimer _waitRibbonTimer;
 
-        // --- Ruban CRM forcé ---
         protected override Office.IRibbonExtensibility CreateRibbonExtensibilityObject()
         {
             return new RibbonController();
         }
 
+        private void InternalStartup()
+        {
+            this.Startup += ThisAddIn_Startup;
+            this.Shutdown += ThisAddIn_Shutdown;
+        }
+
         private void ThisAddIn_Startup(object sender, EventArgs e)
         {
-//            Logger.ConfigureFromAppConfig();
             Logger.Info("Outlook add-in startup");
             try
             {
@@ -38,13 +108,12 @@ namespace CrmRegardingAddin
             }
             catch { }
 
-            // Afficher la fenêtre de connexion au démarrage (avec Retry/Cancel)
             var t = new WinFormsTimer();
-            t.Interval = 300; // laisser Outlook afficher sa fenêtre d'abord
+            t.Interval = 300;
             t.Tick += (s, args) =>
             {
                 try { (s as WinFormsTimer).Stop(); (s as WinFormsTimer).Dispose(); } catch { }
-                TryShowStartupConnectDialogLoop();
+                TryShowStartupConnectDialogOnce();
             };
             t.Start();
         }
@@ -73,299 +142,260 @@ namespace CrmRegardingAddin
             catch { }
         }
 
-        /// <summary>
-        /// Affiche StartupConnectForm en boucle tant que l'utilisateur choisit "Réessayer".
-        /// Valide uniquement si la propriété Service != null et DialogResult == OK.
-        /// </summary>
-        private void TryShowStartupConnectDialogLoop()
+        private void TryShowStartupConnectDialogOnce()
         {
             if (_attemptedStartupConnect) return;
             _attemptedStartupConnect = true;
 
             IOrganizationService svc = null;
-
-            while (true)
+            try
             {
-                StartupConnectForm dlg = null;
-                try
+                var target = CredentialStore.GetDefaultTarget();
+                string su, sp;
+                if (CredentialStore.TryLoad(target, out su, out sp))
                 {
-                    // Instanciation directe + branchement du délégué ConnectAsync attendu par la Form
-                    dlg = new StartupConnectForm();
-                    dlg.ConnectAsync = async (CancellationToken ct) =>
-                    {
-                        string diag = null;
-                        IOrganizationService s = null;
-                        try
-                        {
-                            // CrmConn.Connect est synchrone : on le lance dans un Task.Run annulable
-                            s = await Task.Run<IOrganizationService>(() =>
-                            {
-                                ct.ThrowIfCancellationRequested();
-                                var service = CrmConn.Connect(out diag);
-                                ct.ThrowIfCancellationRequested();
-                                return service;
-                            }, ct);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            return new ConnectResult { Service = null, Diag = "Annulé" };
-                        }
-                        catch (System.Exception ex)
-                        {
-                            return new ConnectResult { Service = null, Diag = ex.Message };
-                        }
-
-                        return new ConnectResult { Service = s, Diag = diag };
-                    };
-
-                    var res = dlg.ShowDialog();
-
-                    if (res == DialogResult.OK && dlg.Service != null)
-                    {
-                        svc = dlg.Service;
-                        break; // succès
-                    }
-                    if (res == DialogResult.Retry)
-                    {
-                        // l'utilisateur demande explicitement de réessayer
-                        continue;
-                    }
-                    // Cancel ou autre : on stoppe la boucle
-                    break;
-                }
-                catch
-                {
-                    // Si la Form plante, on sort de la boucle pour tenter le fallback
-                    break;
-                }
-                finally
-                {
-                    try { if (dlg != null) dlg.Dispose(); } catch { }
+                    string diagSilent;
+                    svc = CrmConn.ConnectWithCredentials(su, sp, out diagSilent);
                 }
             }
+            catch { }
 
             if (svc == null)
             {
-                // Fallback : tentative silencieuse (mêmes creds que le bouton)
-                try
+                var dlg = new LoginPromptForm();
+                if (dlg.ShowDialog() == DialogResult.OK)
                 {
                     string diag;
-                    svc = CrmConn.Connect(out diag);
+                    svc = CrmConn.ConnectWithCredentials(dlg.EnteredUserName, dlg.EnteredPassword, out diag);
+                    if (svc != null && dlg.RememberPassword)
+                        try { CredentialStore.Save(CredentialStore.GetDefaultTarget(), dlg.EnteredUserName, dlg.EnteredPassword); } catch { }
+                    else if (svc != null && !dlg.RememberPassword)
+                        try { CredentialStore.Delete(CredentialStore.GetDefaultTarget()); } catch { }
+
+                    if (svc == null && !string.IsNullOrEmpty(diag))
+                        MessageBox.Show("Connexion CRM échouée.\r\n\r\n" + diag, "CRM", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
-                catch { svc = null; }
             }
 
-            // Si le ruban n'est pas prêt, mémoriser et pousser quand il arrive
-            if (RibbonController.Instance == null)
-            {
-                _startupSvcPending = svc;
-                if (_waitRibbonTimer == null)
-                {
-                    _waitRibbonTimer = new WinFormsTimer();
-                    _waitRibbonTimer.Interval = 500;
-                    _waitRibbonTimer.Tick += WaitRibbonTimer_Tick;
-                }
-                _waitRibbonTimer.Start();
-            }
-            else
-            {
-                RibbonController.Instance.SetConnectedService(svc);
-                if (svc != null) RefreshVisibleInspectorPaneIfLinked();
-            }
+            try { RibbonController.Instance?.SetConnectedService(svc); } catch { }
         }
 
         private void WaitRibbonTimer_Tick(object sender, EventArgs e)
         {
-            if (RibbonController.Instance == null) return;
-            _waitRibbonTimer.Stop();
-            try
+            if (RibbonController.Instance != null)
             {
-                RibbonController.Instance.SetConnectedService(_startupSvcPending);
-                if (_startupSvcPending != null) RefreshVisibleInspectorPaneIfLinked();
-            }
-            catch { }
-            finally
-            {
-                _startupSvcPending = null;
-            }
-        }
-
-        private void RefreshVisibleInspectorPaneIfLinked()
-        {
-            try
-            {
-                var insp = this.Application.ActiveInspector();
-                if (insp == null || insp.CurrentItem == null) return;
-
-                var mail = insp.CurrentItem as Outlook.MailItem;
-                if (mail != null) { CreatePaneForMailIfLinked(insp, mail); return; }
-
-                var appt = insp.CurrentItem as Outlook.AppointmentItem;
-                if (appt != null) { CreatePaneForAppointmentIfLinked(insp, appt); return; }
-            }
-            catch { }
-        }
-
-        private void Inspectors_NewInspector(Outlook.Inspector Inspector)
-        {
-            try
-            {
-                if (Inspector == null || Inspector.CurrentItem == null) return;
-
-                var mail = Inspector.CurrentItem as Outlook.MailItem;
-                if (mail != null) { CreatePaneForMailIfLinked(Inspector, mail); return; }
-
-                var appt = Inspector.CurrentItem as Outlook.AppointmentItem;
-                if (appt != null) { CreatePaneForAppointmentIfLinked(Inspector, appt); return; }
-            }
-            catch { }
-        }
-
-        // ----- Afficher/rafraîchir le pane pour un MAIL si lié CRM -----
-        public void CreatePaneForMailIfLinked(Outlook.Inspector inspector, Outlook.MailItem mail)
-        {
-            var rc = RibbonController.Instance;
-            if (rc == null || rc.Org == null) return;
-
-            var msgId = MailUtil.GetInternetMessageId(mail);
-            var crmEmail = MailUtil.FindCrmEmailByMessageId(rc.Org, msgId);
-            if (crmEmail == null) return;
-
-            CustomTaskPane existing;
-            if (_crmPanes.TryGetValue(inspector, out existing))
-            {
-                var ctrlExisting = existing.Control as CrmLinkPane;
-                if (ctrlExisting != null)
+                try
                 {
-                    ctrlExisting.Initialize(rc.Org);
-                    ctrlExisting.SetMailItem(mail);
-                    existing.Visible = true;
+                    _waitRibbonTimer.Stop();
+                    RibbonController.Instance.SetConnectedService(_startupSvcPending);
+                }
+                catch { }
+            }
+        }
+
+        private void Inspectors_NewInspector(Outlook.Inspector insp)
+        {
+            try
+            {
+                var item = insp.CurrentItem;
+                if (item is Outlook.MailItem)
+                {
+                    CreatePaneForMailIfLinked(insp, (Outlook.MailItem)item);
+                }
+                else if (item is Outlook.AppointmentItem)
+                {
+                    CreatePaneForAppointmentIfLinked(insp, (Outlook.AppointmentItem)item);
+                }
+            }
+            catch { }
+        }
+
+        // === Pane helpers ===
+
+        private CustomTaskPane EnsureCrmPane(Outlook.Inspector insp)
+        {
+            if (_crmPanes.ContainsKey(insp))
+                return _crmPanes[insp];
+
+            object control;
+            try
+            {
+                var paneType = Type.GetType("CrmRegardingAddin.CrmLinkPane");
+                if (paneType == null) paneType = FindTypeByName("CrmLinkPane");
+                if (paneType == null) return null;
+
+                control = Activator.CreateInstance(paneType);
+            }
+            catch
+            {
+                return null;
+            }
+
+            CustomTaskPane pane = null;
+            try
+            {
+                var uc = control as System.Windows.Forms.UserControl;
+                if (uc == null) return null;
+
+                pane = this.CustomTaskPanes.Add(uc, "CRM", insp);
+                pane.DockPosition = Office.MsoCTPDockPosition.msoCTPDockPositionBottom;
+                pane.Height = 170;
+                pane.Visible = true;
+
+                _crmPanes[insp] = pane;
+
+                try
+                {
+                    ((Outlook.InspectorEvents_Event)insp).Close += () =>
+                    {
+                        try
+                        {
+                            CustomTaskPane toRemove;
+                            if (_crmPanes.TryGetValue(insp, out toRemove) && toRemove != null)
+                            {
+                                try { this.CustomTaskPanes.Remove(toRemove); } catch { }
+                                try { _crmPanes.Remove(insp); } catch { }
+                            }
+                        }
+                        catch { }
+                    };
+                }
+                catch { }
+            }
+            catch { }
+            return pane;
+        }
+
+        private static Type FindTypeByName(string typeName)
+        {
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    var t = asm.GetType("CrmRegardingAddin." + typeName);
+                    if (t != null) return t;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private static void SafeInvoke(object target, string method, params object[] args)
+        {
+            if (target == null) return;
+            try
+            {
+                var mi = target.GetType().GetMethod(method, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (mi != null) mi.Invoke(target, args);
+            }
+            catch { }
+        }
+
+        private static void SafeSet(object target, string prop, object value)
+        {
+            if (target == null) return;
+            try
+            {
+                var pi = target.GetType().GetProperty(prop, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (pi != null && pi.CanWrite) pi.SetValue(target, value, null);
+            }
+            catch { }
+        }
+
+        private static void SafeSetField(object target, string fieldName, object value)
+        {
+            if (target == null) return;
+            try
+            {
+                var fi = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (fi != null) fi.SetValue(target, value);
+            }
+            catch { }
+        }
+
+        // === Methods used by CrmActions.cs ===
+
+        public void CreatePaneForMailIfLinked(Outlook.Inspector insp, Outlook.MailItem mi)
+        {
+            try
+            {
+                
+                // Gate: show pane only if crmlinkstate>0
+                if (!IsLinkedByLinkState(mi)) { HidePaneForInspector(insp); return; }
+                var pane = EnsureCrmPane(insp);
+                if (pane == null) return;
+
+                var ctrl = pane.Control;
+                var org1 = RibbonController.Instance != null ? RibbonController.Instance.Org : null;
+
+                SafeInvoke(ctrl, "Initialize", org1);
+                SafeInvoke(ctrl, "SetOrganization", org1);
+                SafeSet(ctrl, "Organization", org1);
+
+                SafeInvoke(ctrl, "SetMailItem", mi);
+                SafeSet(ctrl, "MailItem", mi);
+
+                SafeSetField(ctrl, "OnOpenCrm", new Action<string, Guid>((ln, id) => { try { RibbonController.Instance?.OpenCrm(ln, id); } catch { } }));
+                SafeInvoke(ctrl, "RefreshData");
+                SafeInvoke(ctrl, "UpdateUI");
+            }
+            catch { }
+        }
+
+        public void CreatePaneForAppointmentIfLinked(Outlook.Inspector insp, Outlook.AppointmentItem appt)
+        {
+            try
+            {
+                
+                // Gate: show pane only if crmlinkstate>0
+                if (!IsLinkedByLinkState(appt)) { HidePaneForInspector(insp); return; }
+                var pane = EnsureCrmPane(insp);
+                if (pane == null) return;
+
+                var ctrl = pane.Control;
+                var org1 = RibbonController.Instance != null ? RibbonController.Instance.Org : null;
+
+                SafeInvoke(ctrl, "Initialize", org1);
+                SafeInvoke(ctrl, "SetOrganization", org1);
+                SafeSet(ctrl, "Organization", org1);
+
+                SafeInvoke(ctrl, "SetAppointmentItem", appt);
+                SafeSet(ctrl, "AppointmentItem", appt);
+
+                SafeSetField(ctrl, "OnOpenCrm", new Action<string, Guid>((ln, id) => { try { RibbonController.Instance?.OpenCrm(ln, id); } catch { } }));
+                SafeInvoke(ctrl, "RefreshData");
+                SafeInvoke(ctrl, "UpdateUI");
+            }
+            catch { }
+        }
+
+        private void HidePaneForInspector(Outlook.Inspector insp)
+        {
+            try
+            {
+                if (insp == null) return;
+                CustomTaskPane pane;
+                if (_crmPanes.TryGetValue(insp, out pane) && pane != null)
+                {
+                    try { this.CustomTaskPanes.Remove(pane); } catch { }
+                    try { _crmPanes.Remove(insp); } catch { }
                     return;
                 }
-                try { this.CustomTaskPanes.Remove(existing); } catch { }
-                _crmPanes.Remove(inspector);
-            }
-
-            var ctrl = new CrmLinkPane();
-            ctrl.Initialize(rc.Org);
-            ctrl.SetMailItem(mail);
-            ctrl.OnOpenCrm = (ln, id) => rc.OpenCrm(ln, id);
-
-            var pane = this.CustomTaskPanes.Add(ctrl, "CRM", inspector);
-            pane.DockPosition = Microsoft.Office.Core.MsoCTPDockPosition.msoCTPDockPositionBottom;
-            pane.Height = 250;
-            pane.Visible = true;
-
-            _crmPanes[inspector] = pane;
-
-            var inspEvents = inspector as Outlook.InspectorEvents_10_Event;
-            if (inspEvents != null)
-            {
-                inspEvents.Close += () =>
+                // Fallback: scan CustomTaskPanes for same Window
+                try
                 {
-                    try
+                    foreach (CustomTaskPane p in this.CustomTaskPanes)
                     {
-                        CustomTaskPane toRemove;
-                        if (_crmPanes.TryGetValue(inspector, out toRemove))
+                        if (object.ReferenceEquals(p.Window, insp))
                         {
-                            try { this.CustomTaskPanes.Remove(toRemove); } catch { }
-                            _crmPanes.Remove(inspector);
+                            try { this.CustomTaskPanes.Remove(p); } catch { }
+                            break;
                         }
                     }
-                    catch { }
-                };
-            }
-        }
-
-        // ----- Afficher/rafraîchir le pane pour un RDV si lié CRM -----
-        public void CreatePaneForAppointmentIfLinked(Outlook.Inspector inspector, Outlook.AppointmentItem appt)
-        {
-            var rc = RibbonController.Instance;
-            if (rc == null || rc.Org == null || inspector == null || appt == null) return;
-
-            var goid = appt.GlobalAppointmentID ?? "";
-            var crmAppt = CrmActions.FindCrmAppointmentByGlobalObjectId(rc.Org, goid);
-            if (crmAppt == null) return; // pas de lien CRM => pas de pane
-
-            Microsoft.Office.Tools.CustomTaskPane existing;
-            if (_crmPanes.TryGetValue(inspector, out existing))
-            {
-                CrmLinkPane ctrlExisting;
-                if (TryGetCrmLinkPane(existing, out ctrlExisting))
-                {
-                    // Pane encore vivant : on le réutilise/rafraîchit
-                    ctrlExisting.Initialize(rc.Org);
-                    ctrlExisting.SetAppointmentItem(appt);
-                    existing.Visible = true;
-                    return;
                 }
-
-                // Pane mort/stale => on le retire proprement et on l'oublie
-                try { this.CustomTaskPanes.Remove(existing); } catch { }
-                _crmPanes.Remove(inspector);
+                catch { }
             }
-
-            // (Re)création d'un pane neuf
-            var ctrl = new CrmLinkPane();
-            ctrl.Initialize(rc.Org);
-            ctrl.SetAppointmentItem(appt);
-            ctrl.OnOpenCrm = (ln, id) => rc.OpenCrm(ln, id);
-
-            var pane = this.CustomTaskPanes.Add(ctrl, "CRM", inspector);
-            pane.DockPosition = Microsoft.Office.Core.MsoCTPDockPosition.msoCTPDockPositionBottom;
-            pane.Height = 160;
-            pane.Visible = true;
-
-            _crmPanes[inspector] = pane;
-        }
-
-        #region VSTO generated code
-        private void InternalStartup()
-        {
-            this.Startup += new System.EventHandler(ThisAddIn_Startup);
-            this.Shutdown += new System.EventHandler(ThisAddIn_Shutdown);
-        }
-        #endregion
-        public void RefreshPaneForAppointment(Outlook.Inspector insp, Outlook.AppointmentItem appt)
-        {
-            // Chercher un pane existant pour cette fenêtre
-            Microsoft.Office.Tools.CustomTaskPane existing = null;
-
-            foreach (var pane in this.CustomTaskPanes)
-            {
-                if (pane.Control is CrmLinkPane && pane.Window == insp)
-                {
-                    existing = pane;
-                    break;
-                }
-            }
-
-            if (existing != null)
-            {
-                this.CustomTaskPanes.Remove(existing);
-            }
-
-            // Recréer le pane si un lien CRM existe encore
-            CreatePaneForAppointmentIfLinked(insp, appt);
-        }
-        private bool TryGetCrmLinkPane(Microsoft.Office.Tools.CustomTaskPane pane, out CrmLinkPane ctrl)
-        {
-            ctrl = null;
-            if (pane == null) return false;
-            try
-            {
-                // Peut lever ObjectDisposedException si le pane est déjà détruit
-                ctrl = pane.Control as CrmLinkPane;
-                return ctrl != null;
-            }
-            catch (ObjectDisposedException)
-            {
-                return false;
-            }
-            catch (InvalidOperationException)
-            {
-                return false;
-            }
+            catch { }
         }
     }
 }

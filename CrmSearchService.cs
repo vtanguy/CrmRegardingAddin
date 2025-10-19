@@ -125,6 +125,69 @@ namespace CrmRegardingAddin
 
     public static class CrmSearchService
     {
+        public static List<ColumnSpec> ParseLayoutColumns(IOrganizationService org, string entityLogicalName, string layoutXml)
+        {
+            var cols = new List<ColumnSpec>();
+            if (string.IsNullOrWhiteSpace(layoutXml))
+                return cols;
+
+            try
+            {
+                var doc = XDocument.Parse(layoutXml);
+                var root = doc.Root;
+                if (root == null) return cols;
+                XNamespace ns = root.Name.Namespace;
+
+                // CRM layout: <grid><row><cell name="xxx" width="###" ... /></row></grid>
+                var cells = doc.Descendants(ns + "cell");
+                foreach (var cell in cells)
+                {
+                    var nameAttr = cell.Attribute("name");
+                    if (nameAttr == null) continue;
+                    var logicalName = nameAttr.Value ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(logicalName)) continue;
+
+                    int width = 150;
+                    var wAttr = cell.Attribute("width");
+                    if (wAttr != null)
+                    {
+                        int w;
+                        if (int.TryParse(wAttr.Value, out w)) width = w;
+                    }
+
+                    // Header (display name)
+                    string headerAttrLogical = logicalName;
+                    // alias "entity.attribute"
+                    if (headerAttrLogical.Contains("."))
+                    {
+                        var parts = headerAttrLogical.Split('.');
+                        if (parts.Length == 2) headerAttrLogical = parts[1];
+                    }
+
+                    // Strip '*name' suffix (lookup display)
+                    string labelAttr = headerAttrLogical.EndsWith("name", StringComparison.OrdinalIgnoreCase)
+                        ? headerAttrLogical.Substring(0, headerAttrLogical.Length - 4)
+                        : headerAttrLogical;
+
+                    string header = MetadataCache.GetAttributeDisplayName(org, entityLogicalName, labelAttr);
+                    if (string.IsNullOrWhiteSpace(header)) header = headerAttrLogical; // fallback
+
+                    cols.Add(new ColumnSpec
+                    {
+                        EntityLogicalName = entityLogicalName,
+                        Attribute = logicalName,
+                        Width = width,
+                        Header = header
+                    });
+                }
+            }
+            catch
+            {
+                // ignore parse errors, return what we have
+            }
+            return cols;
+        }
+
         public static List<SearchEntityOption> GetEntityOptions()
         {
             return new List<SearchEntityOption>
@@ -411,7 +474,7 @@ namespace CrmRegardingAddin
             return doc.ToString(SaveOptions.DisableFormatting);
         }
 
-        public static EntityCollection Search(IOrganizationService org, string entityLogicalName, ViewInfo view, string term, int top = 100)
+        public static EntityCollection Search(IOrganizationService org, string entityLogicalName, ViewInfo view, string term, int top = 1000)
         {
             var findAttrs = GetQuickFindAttributes(org, entityLogicalName);
             var pattern = NormalizePattern(term);
@@ -464,53 +527,16 @@ namespace CrmRegardingAddin
                                     new XAttribute("value", string.IsNullOrWhiteSpace(pattern) ? "%" : pattern)
                                 )
                             )
+                        ),
+                        // Ordonner par les plus récents en premier pour éviter de tronquer les dernières lignes
+                        new XElement("order",
+                            new XAttribute("attribute", "modifiedon"),
+                            new XAttribute("descending", "true")
                         )
                     )
                 )
             );
             return fx.ToString(SaveOptions.DisableFormatting);
-        }
-
-        // --- VUES : colonnes (avec DisplayName) ---
-
-        public static List<ColumnSpec> ParseLayoutColumns(IOrganizationService org, string mainEntityLogicalName, string layoutXml)
-        {
-            var cols = new List<ColumnSpec>();
-            if (string.IsNullOrWhiteSpace(layoutXml)) return cols;
-
-            var doc = XDocument.Parse(layoutXml);
-            var ns = doc.Root != null ? doc.Root.Name.Namespace : XNamespace.None;
-
-            foreach (var cell in doc.Descendants(ns + "cell"))
-            {
-                var nameAttr = cell.Attribute("name");
-                if (nameAttr == null) continue;
-                var widthAttr = cell.Attribute("width");
-                int w = 120; if (widthAttr != null) { int tmp; if (int.TryParse(widthAttr.Value, out tmp)) w = tmp; }
-
-                var attr = nameAttr.Value;
-                string entity = mainEntityLogicalName;
-
-                // Si layout porte un 'entityname'
-                var enAttr = cell.Attribute("entityname");
-                if (enAttr != null && !string.IsNullOrWhiteSpace(enAttr.Value))
-                    entity = enAttr.Value;
-
-                // Si "alias.attr"
-                if (attr.Contains("."))
-                {
-                    var parts = attr.Split('.');
-                    if (parts.Length == 2)
-                    {
-                        entity = string.IsNullOrWhiteSpace(enAttr != null ? enAttr.Value : null) ? entity : enAttr.Value;
-                        attr = parts[1];
-                    }
-                }
-
-                var header = MetadataCache.GetAttributeDisplayName(org, entity, attr);
-                cols.Add(new ColumnSpec { EntityLogicalName = entity, Attribute = attr, Width = w, Header = header });
-            }
-            return cols;
         }
     }
 }

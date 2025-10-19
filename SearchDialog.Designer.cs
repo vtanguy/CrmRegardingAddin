@@ -23,11 +23,32 @@ namespace CrmRegardingAddin
             this.btnCancel = new System.Windows.Forms.Button();
             this.SuspendLayout();
             // 
+            // lblRecent
+            // 
+            this.lblRecent = new System.Windows.Forms.Label();
+            this.lblRecent.AutoSize = true;
+            this.lblRecent.Location = new System.Drawing.Point(12, 9);
+            this.lblRecent.Name = "lblRecent";
+            this.lblRecent.Size = new System.Drawing.Size(83, 13);
+            this.lblRecent.TabIndex = 100;
+            this.lblRecent.Text = "Liens récents :";
+            // 
+            // cboRecent
+            // 
+            this.cboRecent = new System.Windows.Forms.ComboBox();
+            this.cboRecent.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+            this.cboRecent.FormattingEnabled = true;
+            this.cboRecent.Location = new System.Drawing.Point(110, 6);
+            this.cboRecent.Name = "cboRecent";
+            this.cboRecent.Size = new System.Drawing.Size(388, 21);
+            this.cboRecent.TabIndex = 101;
+
+            // 
             // cboEntity
             // 
             this.cboEntity.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
             this.cboEntity.FormattingEnabled = true;
-            this.cboEntity.Location = new System.Drawing.Point(12, 12);
+            this.cboEntity.Location = new System.Drawing.Point(12, 33);
             this.cboEntity.Name = "cboEntity";
             this.cboEntity.Size = new System.Drawing.Size(180, 21);
             this.cboEntity.TabIndex = 0;
@@ -37,7 +58,7 @@ namespace CrmRegardingAddin
             // 
             this.cboView.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
             this.cboView.FormattingEnabled = true;
-            this.cboView.Location = new System.Drawing.Point(198, 12);
+            this.cboView.Location = new System.Drawing.Point(198, 33);
             this.cboView.Name = "cboView";
             this.cboView.Size = new System.Drawing.Size(300, 21);
             this.cboView.TabIndex = 1;
@@ -46,7 +67,7 @@ namespace CrmRegardingAddin
             // 
             this.txtSearch.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left)
             | System.Windows.Forms.AnchorStyles.Right)));
-            this.txtSearch.Location = new System.Drawing.Point(12, 43);
+            this.txtSearch.Location = new System.Drawing.Point(12, 64);
             this.txtSearch.Name = "txtSearch";
             this.txtSearch.Size = new System.Drawing.Size(406, 20);
             this.txtSearch.TabIndex = 2;
@@ -55,7 +76,7 @@ namespace CrmRegardingAddin
             // btnSearch
             // 
             this.btnSearch.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
-            this.btnSearch.Location = new System.Drawing.Point(424, 41);
+            this.btnSearch.Location = new System.Drawing.Point(424, 62);
             this.btnSearch.Name = "btnSearch";
             this.btnSearch.Size = new System.Drawing.Size(74, 23);
             this.btnSearch.TabIndex = 3;
@@ -70,7 +91,7 @@ namespace CrmRegardingAddin
             | System.Windows.Forms.AnchorStyles.Right)));
             this.lvResults.FullRowSelect = true;
             this.lvResults.HideSelection = false;
-            this.lvResults.Location = new System.Drawing.Point(12, 72);
+            this.lvResults.Location = new System.Drawing.Point(12, 93);
             this.lvResults.MultiSelect = false;
             this.lvResults.Name = "lvResults";
             this.lvResults.Size = new System.Drawing.Size(486, 300);
@@ -114,6 +135,8 @@ namespace CrmRegardingAddin
             this.Controls.Add(this.txtSearch);
             this.Controls.Add(this.cboView);
             this.Controls.Add(this.cboEntity);
+            this.Controls.Add(this.cboRecent);
+            this.Controls.Add(this.lblRecent);
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.Sizable; // fenetre redimensionnable
             this.MinimumSize = new System.Drawing.Size(540, 440);
             this.MaximizeBox = true;
@@ -135,5 +158,7 @@ namespace CrmRegardingAddin
         private System.Windows.Forms.ListView lvResults;
         private System.Windows.Forms.Button btnOk;
         private System.Windows.Forms.Button btnCancel;
+        private System.Windows.Forms.Label lblRecent;
+        private System.Windows.Forms.ComboBox cboRecent;
     }
 }
