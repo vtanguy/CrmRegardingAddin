@@ -77,48 +77,47 @@ namespace CrmRegardingAddin
             catch { /* ignore and fallback */ }
 
             // Fallback mini-dialog (logic name + guid + name)
-            /*            using (var f = new Form())
-                        {
-                            f.Text = "Choisir cible (fallback)";
-                            f.StartPosition = FormStartPosition.CenterParent;
-                            f.FormBorderStyle = FormBorderStyle.FixedDialog;
-                            f.MinimizeBox = false; f.MaximizeBox = false;
-                            f.Width = 460; f.Height = 220; f.Padding = new Padding(10);
+            using (var f = new Form())
+            {
+                f.Text = "Choisir cible (fallback)";
+                f.StartPosition = FormStartPosition.CenterParent;
+                f.FormBorderStyle = FormBorderStyle.FixedDialog;
+                f.MinimizeBox = false; f.MaximizeBox = false;
+                f.Width = 460; f.Height = 220; f.Padding = new Padding(10);
 
-                            var tl = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4, AutoSize = true };
-                            tl.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-                            tl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                            f.Controls.Add(tl);
+                var tl = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4, AutoSize = true };
+                tl.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                tl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                f.Controls.Add(tl);
 
-                            var lbl1 = new System.Windows.Forms.Label { Text = "Logical name:", AutoSize = true, Margin = new Padding(0, 4, 8, 4) };
-                            var txt1 = new TextBox { Dock = DockStyle.Fill, Text = "account" };
-                            var lbl2 = new System.Windows.Forms.Label { Text = "GUID:", AutoSize = true, Margin = new Padding(0, 4, 8, 4) };
-                            var txt2 = new TextBox { Dock = DockStyle.Fill };
-                            var lbl3 = new System.Windows.Forms.Label { Text = "Nom (optionnel):", AutoSize = true, Margin = new Padding(0, 4, 8, 4) };
-                            var txt3 = new TextBox { Dock = DockStyle.Fill };
+                var lbl1 = new System.Windows.Forms.Label { Text = "Logical name:", AutoSize = true, Margin = new Padding(0, 4, 8, 4) };
+                var txt1 = new TextBox { Dock = DockStyle.Fill, Text = "account" };
+                var lbl2 = new System.Windows.Forms.Label { Text = "GUID:", AutoSize = true, Margin = new Padding(0, 4, 8, 4) };
+                var txt2 = new TextBox { Dock = DockStyle.Fill };
+                var lbl3 = new System.Windows.Forms.Label { Text = "Nom (optionnel):", AutoSize = true, Margin = new Padding(0, 4, 8, 4) };
+                var txt3 = new TextBox { Dock = DockStyle.Fill };
 
-                            var pnlBtn = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, AutoSize = true };
-                            var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, AutoSize = true };
-                            var cancel = new Button { Text = "Annuler", DialogResult = DialogResult.Cancel, AutoSize = true };
-                            pnlBtn.Controls.Add(ok); pnlBtn.Controls.Add(cancel);
-                            f.AcceptButton = ok; f.CancelButton = cancel;
+                var pnlBtn = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, AutoSize = true };
+                var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, AutoSize = true };
+                var cancel = new Button { Text = "Annuler", DialogResult = DialogResult.Cancel, AutoSize = true };
+                pnlBtn.Controls.Add(ok); pnlBtn.Controls.Add(cancel);
+                f.AcceptButton = ok; f.CancelButton = cancel;
 
-                            tl.Controls.Add(lbl1, 0, 0); tl.Controls.Add(txt1, 1, 0);
-                            tl.Controls.Add(lbl2, 0, 1); tl.Controls.Add(txt2, 1, 1);
-                            tl.Controls.Add(lbl3, 0, 2); tl.Controls.Add(txt3, 1, 2);
-                            tl.Controls.Add(pnlBtn, 0, 3); tl.SetColumnSpan(pnlBtn, 2);
+                tl.Controls.Add(lbl1, 0, 0); tl.Controls.Add(txt1, 1, 0);
+                tl.Controls.Add(lbl2, 0, 1); tl.Controls.Add(txt2, 1, 1);
+                tl.Controls.Add(lbl3, 0, 2); tl.Controls.Add(txt3, 1, 2);
+                tl.Controls.Add(pnlBtn, 0, 3); tl.SetColumnSpan(pnlBtn, 2);
 
-                            if (f.ShowDialog() != DialogResult.OK) return null;
-                            Guid gid;
-                            if (!Guid.TryParse(txt2.Text, out gid))
-                            {
-                                MessageBox.Show("GUID invalide.", "CRM"); return null;
-                            }
-                            var er = new EntityReference(txt1.Text, gid);
-                            if (!string.IsNullOrWhiteSpace(txt3.Text)) er.Name = txt3.Text;
-                            return er;
-                        } */
-            return null;
+                if (f.ShowDialog() != DialogResult.OK) return null;
+                Guid gid;
+                if (!Guid.TryParse(txt2.Text, out gid))
+                {
+                    MessageBox.Show("GUID invalide.", "CRM"); return null;
+                }
+                var er = new EntityReference(txt1.Text, gid);
+                if (!string.IsNullOrWhiteSpace(txt3.Text)) er.Name = txt3.Text;
+                return er;
+            }
         }
 
         private static string GetReadableName(IOrganizationService org, EntityReference er)
@@ -540,17 +539,14 @@ namespace CrmRegardingAddin
                             if (TryOfferDirectContactLink(org, mi)) return;
                         }
                         catch { }
-
+    
                         var regarding = PromptRegarding(org);
                         if (regarding == null) return;
                         string readable = GetReadableName(org, regarding);
 
                         // Prepare (Outlook only)
-                        try { LinkingApi.PrepareMailLinkInOutlookStore(org, mi, regarding.Id, regarding.LogicalName, readable);
-                            try { RecentLinks.Remember(regarding); } catch { } } catch { }
-                        
-                        try { RecentLinks.Remember(regarding); } catch { }
-try { Globals.ThisAddIn.CreatePaneForMailIfLinked(inspector, mi); } catch { }
+                        try { LinkingApi.PrepareMailLinkInOutlookStore(org, mi, regarding.Id, regarding.LogicalName, readable); } catch { }
+                        try { Globals.ThisAddIn.CreatePaneForMailIfLinked(inspector, mi); } catch { }
 
                         AutoCommitIfNotCompose(org, mi); // suppression du prompt CRM - Confirmation (mail inspector)
                         return;
@@ -571,9 +567,7 @@ try { Globals.ThisAddIn.CreatePaneForMailIfLinked(inspector, mi); } catch { }
                         string readable = GetReadableName(org, regarding);
 
                         try { LinkingApi.PrepareAppointmentLinkInOutlookStore(org, appt, regarding.Id, regarding.LogicalName, readable); } catch { }
-                        
-                        try { RecentLinks.Remember(regarding); } catch { }
-try { Globals.ThisAddIn.CreatePaneForAppointmentIfLinked(inspector, appt); } catch { }
+                        try { Globals.ThisAddIn.CreatePaneForAppointmentIfLinked(inspector, appt); } catch { }
 
                         var dr = MessageBox.Show("— préparation uniquement, aucun enregistrement CRM maintenant —\r\n(Choisir 'Non' gardera seulement la préparation locale.)",
                                                  "CRM - Confirmation", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
@@ -613,7 +607,7 @@ try { Globals.ThisAddIn.CreatePaneForAppointmentIfLinked(inspector, appt); } cat
                         }
                         catch { }
                         var regarding = PromptRegarding(org);
-
+        
                         if (regarding == null) return;
                         string readable = GetReadableName(org, regarding);
 
@@ -658,8 +652,7 @@ try { Globals.ThisAddIn.CreatePaneForAppointmentIfLinked(inspector, appt); } cat
                                 var id = LinkingApi.CommitAppointmentLinkToCrm(org, apptSel);
                                 LinkingApi.FinalizeAppointmentLinkInOutlookStoreAfterCrmCommit(org, apptSel, id);
                                 MessageBox.Show("Lien rendez-vous enregistré dans le CRM.", "CRM", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                                                            try { RecentLinks.Remember(regarding); } catch { }
-}
+                            }
                             catch (Exception ex) { MessageBox.Show("Échec de l'enregistrement CRM:\r\n" + ex.Message, "CRM", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                         }
                         return;
@@ -950,13 +943,11 @@ try { Globals.ThisAddIn.CreatePaneForAppointmentIfLinked(inspector, appt); } cat
                     {
                         // Use existing flow to set regarding and optionally commit
                         var regarding = new EntityReference("contact", contact.Id);
-                        regarding.Name = fullname;
                         try
                         {
                             // Prepare local link props + pane (same UX as normal flow)
                             var readable = fullname;
                             LinkingApi.PrepareMailLinkInOutlookStore(org, mi, regarding.Id, regarding.LogicalName, readable);
-                            try { RecentLinks.Remember(regarding); } catch { }
 
                             try
                             {

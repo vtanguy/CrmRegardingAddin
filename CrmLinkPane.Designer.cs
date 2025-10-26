@@ -14,7 +14,8 @@ namespace CrmRegardingAddin
         private System.Windows.Forms.Label lblTitle;
         private System.Windows.Forms.Button btnRefresh;
         private System.Windows.Forms.Button btnUnlink;
-        private System.Windows.Forms.ListView lvLinks;
+        
+        private System.Windows.Forms.Button btnFinalize;private System.Windows.Forms.ListView lvLinks;
         private System.Windows.Forms.ColumnHeader colRole;
         private System.Windows.Forms.ColumnHeader colName;
         private System.Windows.Forms.ColumnHeader colEntity;
@@ -33,6 +34,7 @@ namespace CrmRegardingAddin
             this.lblTitle = new System.Windows.Forms.Label();
             this.btnRefresh = new System.Windows.Forms.Button();
             this.btnUnlink = new System.Windows.Forms.Button();
+            this.btnFinalize = new System.Windows.Forms.Button();
             this.lvLinks = new System.Windows.Forms.ListView();
             this.colRole = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
             this.colName = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
@@ -52,7 +54,7 @@ namespace CrmRegardingAddin
             // btnRefresh
             // 
             this.btnRefresh.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
-            this.btnRefresh.Location = new System.Drawing.Point(520, 6);
+            this.btnRefresh.Location = new System.Drawing.Point(396, 6);
             this.btnRefresh.Name = "btnRefresh";
             this.btnRefresh.Size = new System.Drawing.Size(85, 26);
             this.btnRefresh.TabIndex = 1;
@@ -60,7 +62,19 @@ namespace CrmRegardingAddin
             this.btnRefresh.UseVisualStyleBackColor = true;
             this.btnRefresh.Click += new System.EventHandler(this.btnRefresh_Click);
             // 
-            // btnUnlink
+
+            // 
+            // btnFinalize
+            // 
+            this.btnFinalize.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
+            this.btnFinalize.Location = new System.Drawing.Point(486, 6);
+            this.btnFinalize.Name = "btnFinalize";
+            this.btnFinalize.Size = new System.Drawing.Size(120, 26);
+            this.btnFinalize.TabIndex = 4;
+            this.btnFinalize.Text = "Finaliser le lien";
+            this.btnFinalize.UseVisualStyleBackColor = true;
+            this.btnFinalize.Click += new System.EventHandler(this.btnFinalize_Click);
+                // btnUnlink
             // 
             this.btnUnlink.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
             this.btnUnlink.Location = new System.Drawing.Point(611, 6);
@@ -119,6 +133,7 @@ namespace CrmRegardingAddin
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.Controls.Add(this.lvLinks);
             this.Controls.Add(this.btnUnlink);
+            this.Controls.Add(this.btnFinalize);
             this.Controls.Add(this.btnRefresh);
             this.Controls.Add(this.lblTitle);
             this.Name = "CrmLinkPane";

@@ -14,35 +14,34 @@ namespace CrmRegardingAddin
 
         // UDF DASL (string + id)
         private const string DASL_LinkState_String = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmlinkstate";
-        private const string DASL_LinkState_Id     = "http://schemas.microsoft.com/mapi/id/"     + PS_PUBLIC_STRINGS + "/0x80C8";
+        private const string DASL_LinkState_Id = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80BD";
 
-        private const string DASL_CrmId_String     = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmid";
-        private const string DASL_CrmId_Id         = "http://schemas.microsoft.com/mapi/id/"     + PS_PUBLIC_STRINGS + "/0x80C4";
+        private const string DASL_CrmId_String = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmid";
+        private const string DASL_CrmId_Id = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80C4";
 
-        private const string DASL_RegId_String     = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmregardingobjectid";
-        private const string DASL_RegId_Id         = "http://schemas.microsoft.com/mapi/id/"     + PS_PUBLIC_STRINGS + "/0x80C9";
+        private const string DASL_RegId_String = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmregardingobjectid";
+        private const string DASL_RegId_Id = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80C9";
 
-        private const string DASL_RegType_String   = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmregardingobjecttypecode";
-        private const string DASL_RegType_Id       = "http://schemas.microsoft.com/mapi/id/"     + PS_PUBLIC_STRINGS + "/0x80CA";
+        private const string DASL_RegType_String = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmregardingobjecttypecode";
+        private const string DASL_RegType_Id = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80CA";
 
-        private const string DASL_OrgId_String   = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmorgid";
-        private const string DASL_OrgId_Id       = "http://schemas.microsoft.com/mapi/id/"     + PS_PUBLIC_STRINGS + "/0x80C5";
+        private const string DASL_OrgId_String = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmorgid";
+        private const string DASL_OrgId_Id = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80C5";
         private const string DASL_EntryId_String = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmEntryID";
-        private const string DASL_EntryId_Id     = "http://schemas.microsoft.com/mapi/id/"     + PS_PUBLIC_STRINGS + "/0x80C3";
+        private const string DASL_EntryId_Id = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80C3";
         private const string DASL_ObjType_String = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmObjectTypeCode";
-        private const string DASL_ObjType_Id     = "http://schemas.microsoft.com/mapi/id/"     + PS_PUBLIC_STRINGS + "/0x80D1";
+        private const string DASL_ObjType_Id = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80D1";
         private const string DASL_RegardingLabel = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/Regarding";
 
         // Extra string-named aliases (observed on SSS/MS add-in items)
         private const string DASL_LinkState_String2 = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmLinkState";
-        private const string DASL_CrmId_String2     = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmId";
-        private const string DASL_OrgId_String2     = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmOrgId";
+        private const string DASL_CrmId_String2 = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmId";
+        private const string DASL_OrgId_String2 = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmOrgId";
 
         private const string DASL_RegId_String_Camel = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmRegardingObjectId";
-        private const string DASL_RegId_String_Old   = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmRegardingId";
+        private const string DASL_RegId_String_Old = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmRegardingId";
 
         private const string DASL_RegType_String_Old = "http://schemas.microsoft.com/mapi/string/" + PS_PUBLIC_STRINGS + "/crmRegardingObjectType";
-
 
         private IOrganizationService _org;
         private Outlook.MailItem _mail;
@@ -50,7 +49,8 @@ namespace CrmRegardingAddin
 
         public Action<string, Guid> OnOpenCrm; // callback pour double-clic
 
-        public CrmLinkPane() { InitializeComponent(); }
+        public CrmLinkPane() { InitializeComponent(); } // Designer gère désormais le bouton "Finaliser"
+
         public void Initialize(IOrganizationService org) { _org = org; }
         public void SetMailItem(Outlook.MailItem mail) { _appt = null; _mail = mail; RefreshLink(); }
         public void SetAppointmentItem(Outlook.AppointmentItem appt) { _mail = null; _appt = appt; RefreshLink(); }
@@ -63,20 +63,25 @@ namespace CrmRegardingAddin
             if (er == null) return;
             var cb = OnOpenCrm; if (cb != null) cb(er.LogicalName, er.Id);
         }
-
-        // *** Missing handler added to satisfy Designer wiring ***
         private void lvLinks_SelectedIndexChanged(object sender, EventArgs e)
         {
             try
             {
-                if (_org == null) { btnUnlink.Enabled = false; return; }
+                if (_org == null) { btnUnlink.Enabled = false; btnFinalize.Enabled = false; return; }
                 var any = lvLinks.SelectedItems.Count > 0 || lvLinks.Items.Count > 0;
                 Outlook.PropertyAccessor pa = null;
                 if (_mail != null) pa = PA(_mail);
                 else if (_appt != null) pa = PA(_appt);
 
-                double? ls = pa != null ? (GetDouble(pa, DASL_LinkState_String) ?? GetDouble(pa, DASL_LinkState_Id)) : null;
-                btnUnlink.Enabled = any && ls.HasValue && ls.Value >= 1.0;
+                double? ls = pa != null ? (GetDoubleAny(pa, DASL_LinkState_String, DASL_LinkState_String2, DASL_LinkState_Id, DASL_LinkState_Id + "0005", DASL_LinkState_Id + "0003")) : null;
+                string crmid = pa != null ? ReadString(pa, DASL_CrmId_String, DASL_CrmId_String2, DASL_CrmId_Id) : null;
+
+                bool prepared = ls.HasValue && ls.Value >= 1.0;
+                bool finalized = !string.IsNullOrWhiteSpace(crmid) || (ls.HasValue && ls.Value >= 2.0);
+
+                bool isCompose = (_mail != null && !_mail.Sent);
+                btnUnlink.Enabled = any && prepared;
+                btnFinalize.Enabled = any && prepared && !finalized && !isCompose; // finaliser seulement si pas déjà finalisé
             }
             catch { /* keep UX responsive */ }
         }
@@ -101,11 +106,10 @@ namespace CrmRegardingAddin
                 if (o is double) return (double)o;
                 if (o is int) return (int)o;
                 double d; if (double.TryParse(Convert.ToString(o, System.Globalization.CultureInfo.InvariantCulture), out d)) return d;
-            } catch { }
+            }
+            catch { }
             return null;
         }
-        
-
         private static double? GetDoubleAny(Outlook.PropertyAccessor pa, params string[] dasls)
         {
             foreach (var d in dasls)
@@ -115,7 +119,6 @@ namespace CrmRegardingAddin
             }
             return null;
         }
-
         private static string GetString(Outlook.PropertyAccessor pa, string dasl)
         {
             try { var o = pa.GetProperty(dasl); return o == null ? null : Convert.ToString(o, System.Globalization.CultureInfo.InvariantCulture); } catch { return null; }
@@ -134,7 +137,8 @@ namespace CrmRegardingAddin
                     var o = pa.GetProperty(d); if (o == null) continue;
                     if (o is int) return (int)o;
                     int v; if (int.TryParse(Convert.ToString(o, System.Globalization.CultureInfo.InvariantCulture), out v)) return v;
-                } catch { }
+                }
+                catch { }
             }
             return null;
         }
@@ -146,7 +150,8 @@ namespace CrmRegardingAddin
             {
                 lvLinks.Items.Clear();
                 btnUnlink.Enabled = false;
-                if (_org == null) return;
+                btnFinalize.Enabled = false;
+                // if (_org == null) return;
 
                 if (_mail != null) RefreshMail();
                 else if (_appt != null) RefreshAppointment();
@@ -161,21 +166,27 @@ namespace CrmRegardingAddin
         private void RefreshMail()
         {
             var pa = PA(_mail);
-            var ls = pa != null ? (GetDoubleAny(pa, DASL_LinkState_String, DASL_LinkState_String2, DASL_LinkState_Id)) : null;
+            var ls = pa != null ? (GetDoubleAny(pa, DASL_LinkState_String, DASL_LinkState_String2, DASL_LinkState_Id, DASL_LinkState_Id + "0005", DASL_LinkState_Id + "0003")) : null;
+
+            // gestion état boutons (préparé/finalisé)
+            bool prepared = ls.HasValue && ls.Value >= 1.0;
+            string crmidStr2 = pa != null ? ReadString(pa, DASL_CrmId_String, DASL_CrmId_String2, DASL_CrmId_Id) : null;
+            bool finalized = (!string.IsNullOrWhiteSpace(crmidStr2)) || (ls.HasValue && ls.Value >= 2.0);
+            btnUnlink.Enabled = prepared;
+            bool __isCompose = (_mail != null && !_mail.Sent);
+            btnFinalize.Enabled = prepared && !finalized && !__isCompose;
+
             if (!ls.HasValue || ls.Value < 1.0)
             {
                 AddRow("Aucun email CRM", "(non lié)", "", null);
                 return;
             }
 
-            // A PARTIR DE LÀ, on affiche la pane (ls>=1)
-            btnUnlink.Enabled = true; // permettre l'annulation même si l'item CRM n'est pas résolu par messageid
-
-            // 1) prioritaire : retrouver par UDF crmid (cas des liens créés par notre addin)
+            // 1) prioritaire : retrouver par UDF crmid
             Guid emailId;
             Entity email = null;
-            var crmidStr = pa != null ? ReadString(pa, DASL_CrmId_String, DASL_CrmId_String2, DASL_CrmId_Id) : null;
-            if (!string.IsNullOrWhiteSpace(crmidStr) && Guid.TryParse(crmidStr.Trim('{','}'), out emailId))
+            var crmidStr = crmidStr2;
+            if (!string.IsNullOrWhiteSpace(crmidStr) && Guid.TryParse(crmidStr.Trim('{', '}'), out emailId))
             {
                 try { email = _org.Retrieve("email", emailId, new ColumnSet("subject", "regardingobjectid", "from", "to", "cc", "bcc")); } catch { email = null; }
             }
@@ -187,7 +198,8 @@ namespace CrmRegardingAddin
                 {
                     var msgId = MailUtil.GetInternetMessageId(_mail);
                     email = MailUtil.FindCrmEmailByMessageIdFull(_org, msgId);
-                } catch { }
+                }
+                catch { }
             }
 
             if (email != null)
@@ -195,62 +207,64 @@ namespace CrmRegardingAddin
                 AddRow("Email (CRM)", email.GetAttributeValue<string>("subject") ?? "(sans objet)", "email",
                        new EntityReference("email", email.Id));
 
-                var reg = email.GetAttributeValue<EntityReference>("regardingobjectid");
-                if (reg != null) AddRow("Regarding", ResolveName(_org, reg), reg.LogicalName, reg);
-
-                AddPartyRows(email, "from");
+                AddRegardingFromProps(pa);
+AddPartyRows(email, "from");
                 AddPartyRows(email, "to");
                 AddPartyRows(email, "cc");
                 AddPartyRows(email, "bcc");
                 return;
             }
 
-            // 3) Dernier repli : afficher un résumé propre à partir des UDF (PAS de lignes UDF brutes)
+            // 3) Repli : résumé à partir des UDF (sans bruit)
             var regIdStr = pa != null ? ReadString(pa, DASL_RegId_String, DASL_RegId_String_Camel, DASL_RegId_String_Old, DASL_RegId_Id) : null;
-            var regType  = pa != null ? ReadInt(pa, DASL_RegType_String, DASL_RegType_Id) : (ReadInt(pa, DASL_ObjType_String, DASL_ObjType_Id) ?? ReadInt(pa, DASL_RegType_String_Old)) ;
+            var regType = pa != null ? ReadInt(pa, DASL_RegType_String, DASL_RegType_Id) : (ReadInt(pa, DASL_ObjType_String, DASL_ObjType_Id) ?? ReadInt(pa, DASL_RegType_String_Old));
             EntityReference regRef = null;
             if (!string.IsNullOrWhiteSpace(regIdStr) && regType.HasValue)
             {
-                Guid rid; if (Guid.TryParse(regIdStr.Trim('{','}'), out rid))
+                Guid rid; if (Guid.TryParse(regIdStr.Trim('{', '}'), out rid))
                 {
                     var logical = LogicalNameFromObjectTypeCode(regType.Value);
                     if (!string.IsNullOrEmpty(logical)) regRef = new EntityReference(logical, rid);
                 }
             }
 
-            AddRow("Email lié", "(en attente de résolution CRM)", "email", null);
-            if (regRef != null)
-                AddRow("Regarding", ResolveName(_org, regRef), regRef.LogicalName, regRef);
-        }
+            AddRow("Email lié", (ls.HasValue && ls.Value >= 2.0) ? "(CRM déconnecté)" : "(en attente de résolution CRM)", "email", null);
+AddRegardingFromProps(pa);
+}
 
         // === APPOINTMENT ===
-                private void RefreshAppointment()
+        private void RefreshAppointment()
         {
             var pa = PA(_appt);
-            var ls = pa != null ? (GetDoubleAny(pa, DASL_LinkState_String, DASL_LinkState_String2, DASL_LinkState_Id)) : null;
+            var ls = pa != null ? (GetDoubleAny(pa, DASL_LinkState_String, DASL_LinkState_String2, DASL_LinkState_Id, DASL_LinkState_Id + "0005", DASL_LinkState_Id + "0003")) : null;
+
+            bool prepared = ls.HasValue && ls.Value >= 1.0;
+            string crmidStr2 = pa != null ? ReadString(pa, DASL_CrmId_String, DASL_CrmId_String2, DASL_CrmId_Id) : null;
+            bool finalized = (!string.IsNullOrWhiteSpace(crmidStr2)) || (ls.HasValue && ls.Value >= 2.0);
+            btnUnlink.Enabled = prepared;
+            bool __isCompose = (_mail != null && !_mail.Sent);
+            btnFinalize.Enabled = prepared && !finalized && !__isCompose;
+
             if (!ls.HasValue || ls.Value < 1.0)
             {
                 AddRow("Aucun rendez-vous CRM", "(non lié)", "", null);
                 return;
             }
 
-            // Dès que ls >= 1, on affiche la pane et on permet l'annulation
-            btnUnlink.Enabled = true;
-
             // Lecture des identifiants CRM (variants)
-            var crmidStr = pa != null ? ReadString(pa, DASL_CrmId_String, DASL_CrmId_String2, DASL_CrmId_Id) : null;
+            var crmidStr = crmidStr2;
             var orgidStr = pa != null ? ReadString(pa, DASL_OrgId_String, DASL_OrgId_String2, DASL_OrgId_Id) : null;
-            var objType  = pa != null ? (ReadInt(pa, DASL_ObjType_String, DASL_ObjType_Id) ?? 0) : 0;
+            var objType = pa != null ? (ReadInt(pa, DASL_ObjType_String, DASL_ObjType_Id) ?? 0) : 0;
 
             // 1) prioritaire : si crmid présent -> retrieve direct
             Guid apptId;
             Entity apptCrm = null;
-            if (!string.IsNullOrWhiteSpace(crmidStr) && Guid.TryParse(crmidStr.Trim('{','}'), out apptId))
+            if (!string.IsNullOrWhiteSpace(crmidStr) && Guid.TryParse(crmidStr.Trim('{', '}'), out apptId))
             {
                 try { apptCrm = _org.Retrieve("appointment", apptId, new ColumnSet("subject", "regardingobjectid", "organizer", "requiredattendees", "optionalattendees")); } catch { apptCrm = null; }
             }
 
-            // 2) fallback : globalobjectid s'il n'y a pas crmid (ou retrieve a échoué)
+            // 2) fallback : globalobjectid
             if (apptCrm == null)
             {
                 try
@@ -258,7 +272,8 @@ namespace CrmRegardingAddin
                     var goid = _appt.GlobalAppointmentID;
                     var found = CrmActions.FindCrmAppointmentByGlobalObjectId(_org, goid);
                     if (found != null) apptCrm = found;
-                } catch { }
+                }
+                catch { }
             }
 
             // 3) Affichage
@@ -266,20 +281,18 @@ namespace CrmRegardingAddin
             {
                 AddRow("Rendez-vous (CRM)", apptCrm.GetAttributeValue<string>("subject") ?? "(sans objet)", "appointment",
                        new EntityReference("appointment", apptCrm.Id));
-                var reg = apptCrm.GetAttributeValue<EntityReference>("regardingobjectid");
-                if (reg != null) AddRow("Regarding", ResolveName(_org, reg), reg.LogicalName, reg);
-                AddPartyRows(apptCrm, "organizer");
+                AddRegardingFromProps(pa);
+AddPartyRows(apptCrm, "organizer");
                 AddPartyRows(apptCrm, "requiredattendees");
                 AddPartyRows(apptCrm, "optionalattendees");
                 return;
             }
 
-            // 4) Si l'élément vient de la synchro CRM (SSS) : crmid+crmorgid (et souvent objtype=4201) mais pas de regarding*
+            // 4) Cas SSS : crmid + crmorgid mais pas de regarding*
             if (!string.IsNullOrWhiteSpace(crmidStr) && !string.IsNullOrWhiteSpace(orgidStr) && (objType == 4201 || objType == 0))
             {
-                Guid id; if (Guid.TryParse(crmidStr.Trim('{','}'), out id))
+                Guid id; if (Guid.TryParse(crmidStr.Trim('{', '}'), out id))
                 {
-                    // On affiche une ligne synthétique; le double-clic ouvrira quand même l'enregistrement si OnOpenCrm est branché.
                     AddRow("Rendez-vous (CRM)", "(résolu par UDF)", "appointment", new EntityReference("appointment", id));
                     var regLbl = pa != null ? ReadString(pa, DASL_RegardingLabel) : null;
                     if (!string.IsNullOrWhiteSpace(regLbl))
@@ -288,8 +301,29 @@ namespace CrmRegardingAddin
                 }
             }
 
-            // 5) Dernier repli : simple mention liée sans UDF bruit
-            AddRow("Rendez-vous lié", "(en attente de résolution CRM)", "appointment", null);
+            // 5) Dernier repli
+            AddRow("Rendez-vous lié", (ls.HasValue && ls.Value >= 2.0) ? "(CRM déconnecté)" : "(en attente de résolution CRM)", "appointment", null);
+}
+
+        private void AddRegardingFromProps(Outlook.PropertyAccessor pa)
+        {
+            if (pa == null) return;
+            string regIdStr = ReadString(pa, DASL_RegId_String, DASL_RegId_String_Camel, DASL_RegId_String_Old, DASL_RegId_Id);
+            int? regType = ReadInt(pa, DASL_RegType_String, DASL_RegType_Id) ?? (ReadInt(pa, DASL_ObjType_String, DASL_ObjType_Id) ?? ReadInt(pa, DASL_RegType_String_Old));
+            string label = ReadString(pa, DASL_RegardingLabel);
+
+            Guid rid;
+            string logical = regType.HasValue ? LogicalNameFromObjectTypeCode(regType.Value) : null;
+            EntityReference er = null;
+            if (!string.IsNullOrWhiteSpace(regIdStr) && Guid.TryParse(regIdStr.Trim('{','}'), out rid) && !string.IsNullOrEmpty(logical))
+            {
+                er = new EntityReference(logical, rid);
+            }
+
+            string display = !string.IsNullOrWhiteSpace(label)
+                ? label
+                : (er != null ? (er.Name ?? logical ?? "") : "(aucun)");
+            AddRow("Regarding", display, er != null ? er.LogicalName : "", er);
         }
 
         private void AddPartyRows(Entity activity, string attr)
@@ -404,6 +438,43 @@ namespace CrmRegardingAddin
                         MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
+        }
+
+        private void btnFinalize_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (_org == null)
+                {
+                    MessageBox.Show("Non connecté au CRM.", "CRM", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                if (_mail == null)
+                {
+                    MessageBox.Show("Ouvrez un email pour finaliser le lien.", "CRM", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                // Vérifier l'état préparé (LinkState >= 1 et Regarding présent)
+                if (!LinkingApi.HasPreparedMailLink(_mail))
+                {
+                    MessageBox.Show("Aucun lien préparé à finaliser pour cet email.", "CRM", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                try
+                {
+                    LinkingApi.FinalizePreparedMailIfPossible(_org, _mail);
+                    MessageBox.Show("Lien CRM finalisé.", "CRM", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshLink();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Impossible de finaliser le lien CRM pour cet email.\r\n" + ex.Message,
+                                    "CRM", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            catch { /* ne jamais planter l'UI */ }
         }
     }
 }

@@ -280,6 +280,7 @@
       <DependentUpon>Resources.resx</DependentUpon>
       <DesignTime>True</DesignTime>
     </Compile>
+    <EmbeddedResource Include="Resources\TF_30x32.png" />
     <EmbeddedResource Include="SearchDialog.resx">
       <DependentUpon>SearchDialog.cs</DependentUpon>
     </EmbeddedResource>
@@ -318,14 +319,9 @@
     <AppDesigner Include="Properties\" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="Resources\CRM_Dynamics_22px.png" />
-  </ItemGroup>
-  <ItemGroup>
-    <EmbeddedResource Include="Resources\TF_30x32.png" />
-  </ItemGroup>
-  <ItemGroup>
-    <EmbeddedResource Include="Resources\CRM_Dynamics_Color_32.png" />
-    <EmbeddedResource Include="Resources\CRM_Dynamics_Gray_32.png" />
+    <EmbeddedResource Include="Resources\CrmLink_Offline_32.png" />
+    <EmbeddedResource Include="Resources\CrmLink_OnlineLinked_32.png" />
+    <EmbeddedResource Include="Resources\CrmLink_OnlineUnlinked_32.png" />
   </ItemGroup>
   <PropertyGroup>
     <VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">10.0</VisualStudioVersion>

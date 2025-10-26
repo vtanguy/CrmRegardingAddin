@@ -16,6 +16,12 @@ namespace CrmRegardingAddin
     {
         private const string PS_PUBLIC_STRINGS = "{00020329-0000-0000-C000-000000000046}";
         private const int OTC_SYSTEMUSER = 8;
+        private const int OTC_ACCOUNT = 1;
+        private const int OTC_CONTACT = 2;
+        private const int OTC_LEAD = 4;
+        private const int OTC_APPOINTMENT = 4201;
+        private const int OTC_EMAIL = 4202;
+
 
         // === MS add-in string-named aliases ===
         private const string DASL_RegId_String_Lower   = "http://schemas.microsoft.com/mapi/string/{00020329-0000-0000-C000-000000000046}/crmregardingobjectid";
@@ -26,7 +32,8 @@ namespace CrmRegardingAddin
 
         private static class DaslId
         {
-            public const string LinkState            = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80C8"; // PT_DOUBLE
+            public const string UserProperties     = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80C8"; // PT_BINARY
+            public const string LinkState            = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80BD"; // PT_DOUBLE
             public const string RegardingId          = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80C9"; // PT_UNICODE
             public const string RegardingObjectType  = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80CA"; // PT_UNICODE
             public const string EntryID              = "http://schemas.microsoft.com/mapi/id/" + PS_PUBLIC_STRINGS + "/0x80C3"; // PT_UNICODE
@@ -188,6 +195,7 @@ namespace CrmRegardingAddin
                 if (!string.IsNullOrWhiteSpace(__xml)) { TrySet(pa, DaslStr.PartyInfo, __xml); TrySet(pa, DaslId.PartyInfo, __xml); try { appt.Save(); } catch { } }
             } catch { }
 
+            try { EnsureUserPropertiesForAppointment(appt); } catch { }
             try { appt.Save(); } catch { }
         }
 
@@ -234,9 +242,82 @@ namespace CrmRegardingAddin
                     TrySet(pa, DaslStr.PartyInfo, xml);
                     TrySet(pa, DaslId.PartyInfo, xml);
                 }
+                try { EnsureUserPropertiesForMail(mi); } catch { }
             } catch { }
 
+            try { EnsureUserPropertiesForMail(mi); } catch { }
             try { mi.Save(); } catch { }
+        }
+        // ======================== PREPARED STATE HELPERS ========================
+
+        /// <summary>
+        /// True si l’email a été préparé (crmLinkState >= 1) ET qu’un RegardingId est présent.
+        /// </summary>
+        public static bool HasPreparedMailLink(Outlook.MailItem mi)
+        {
+            if (mi == null) return false;
+            try
+            {
+                var pa = mi.PropertyAccessor;
+                if (pa == null) return false;
+
+                // LinkState peut être stocké en DOUBLE (id) ou en string (alias)
+                string ls = TryGet(pa, DaslStr.LinkState, DaslId.LinkState);
+                double d;
+                if (!string.IsNullOrWhiteSpace(ls)
+                    && double.TryParse(ls, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out d))
+                {
+                    if (d < 1.0) return false;
+                }
+                else
+                {
+                    try
+                    {
+                        object o = pa.GetProperty(DaslId.LinkState);
+                        if (o is double && ((double)o) < 1.0) return false;
+                    }
+                    catch { }
+                }
+
+                var reg = TryGet(pa,
+                                 DaslId.RegardingId,
+                                 DaslStr.RegardingId_Lower,
+                                 DaslStr.RegardingId_Camel,
+                                 DaslStr.RegardingId_Old);
+                return !string.IsNullOrWhiteSpace(reg);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Re-construit crmpartyinfo (MAIL) avec les destinataires finaux,
+        /// assure la présence de 0x80C8 (UserProperties), puis commit CRM + finalize Outlook.
+        /// </summary>
+        public static Guid FinalizePreparedMailIfPossible(IOrganizationService org, Outlook.MailItem mi)
+        {
+            if (org == null || mi == null) throw new System.ArgumentNullException();
+            try
+            {
+                var pa = mi.PropertyAccessor;
+
+                // Rebuild crmpartyinfo (version MAIL MS-compatible que tu as déjà)
+                var xml = BuildPartyInfo(org, mi);
+                if (!string.IsNullOrWhiteSpace(xml))
+                {
+                    TrySet(pa, DaslStr.PartyInfo, xml);
+                    TrySet(pa, DaslId.PartyInfo, xml);
+                }
+
+                // Forcer la (re)génération du BLOB 0x80C8
+                EnsureUserPropertiesForMail(mi);
+                try { mi.Save(); } catch { }
+            }
+            catch { /* non bloquant avant commit CRM */ }
+
+            // Commit + finalize
+            var id = CommitMailLinkToCrm(org, mi);
+            FinalizeMailLinkInOutlookStoreAfterCrmCommit(org, mi, id);
+            return id;
         }
 
         // ======================== COMMIT (CRM) ========================
@@ -470,7 +551,109 @@ namespace CrmRegardingAddin
             try { mi.Save(); } catch { }
         }
 
+        
+        private static string UnbracedLower(Guid g) { return g.ToString("D").ToLowerInvariant(); }
+
+        private static string GetCrmDisplayName(IOrganizationService org, string logicalName, Guid id)
+        {
+            try
+            {
+                string attr = null;
+                switch ((logicalName ?? "").ToLowerInvariant())
+                {
+                    case "systemuser": attr = "fullname"; break;
+                    case "contact":    attr = "fullname"; break;
+                    case "lead":       attr = "fullname"; break;
+                    case "account":    attr = "name";     break;
+                }
+                if (string.IsNullOrWhiteSpace(attr)) return null;
+                var e = org.Retrieve(logicalName, id, new ColumnSet(attr));
+                if (e == null) return null;
+                var o = e.Contains(attr) ? e[attr] : null;
+                return o != null ? Convert.ToString(o, System.Globalization.CultureInfo.InvariantCulture) : null;
+            }
+            catch { return null; }
+        }
+
+        private static Tuple<Guid,int,string> ResolveCrmPartyByEmailWithName(IOrganizationService org, string smtp)
+        {
+            if (org == null || string.IsNullOrWhiteSpace(smtp)) return null;
+
+            // Priority: systemuser -> contact -> account -> lead
+            var e = TryFindEntityByEmail(org, "systemuser", "internalemailaddress", smtp, new []{"fullname"});
+            if (e != null) return Tuple.Create(e.Id, OTC_SYSTEMUSER, SafeGetString(e, "fullname"));
+
+            e = TryFindEntityByEmail(org, "contact", "emailaddress1", smtp, new []{"fullname"});
+            if (e != null) return Tuple.Create(e.Id, OTC_CONTACT, SafeGetString(e, "fullname"));
+
+            e = TryFindEntityByEmail(org, "account", "emailaddress1", smtp, new []{"name"});
+            if (e != null) return Tuple.Create(e.Id, OTC_ACCOUNT, SafeGetString(e, "name"));
+
+            e = TryFindEntityByEmail(org, "lead", "emailaddress1", smtp, new []{"fullname"});
+            if (e != null) return Tuple.Create(e.Id, OTC_LEAD, SafeGetString(e, "fullname"));
+
+            return null;
+        }
+
+        private static Microsoft.Xrm.Sdk.Entity TryFindEntityByEmail(IOrganizationService org, string logicalName, string attribute, string email, string[] columns)
+        {
+            try
+            {
+                var q = new QueryExpression(logicalName) { ColumnSet = new ColumnSet(columns ?? new string[0]), TopCount = 1 };
+                q.Criteria.AddCondition(attribute, ConditionOperator.Equal, email);
+                var r = org.RetrieveMultiple(q);
+                return r.Entities.FirstOrDefault();
+            }
+            catch { return null; }
+        }
+
+        private static string SafeGetString(Microsoft.Xrm.Sdk.Entity e, string attr)
+        {
+            try
+            {
+                if (e == null || string.IsNullOrWhiteSpace(attr)) return null;
+                if (!e.Contains(attr)) return null;
+                var o = e[attr];
+                return o != null ? Convert.ToString(o, System.Globalization.CultureInfo.InvariantCulture) : null;
+            }
+            catch { return null; }
+        }
+
+        
+        private static string GetOutgoingSenderSmtp(Outlook.MailItem mi)
+        {
+            try
+            {
+                var acc = mi.SendUsingAccount;
+                if (acc != null && !string.IsNullOrWhiteSpace(acc.SmtpAddress))
+                    return acc.SmtpAddress;
+            } catch { }
+            try
+            {
+                var ns = mi.Session;
+                var ae = ns != null ? ns.CurrentUser?.AddressEntry : null;
+                if (ae != null)
+                {
+                    try { var exu = ae.GetExchangeUser(); if (exu != null && !string.IsNullOrWhiteSpace(exu.PrimarySmtpAddress)) return exu.PrimarySmtpAddress; } catch { }
+                    try { var addr = ae.Address; if (!string.IsNullOrWhiteSpace(addr) && addr.Contains("@")) return addr; } catch { }
+                }
+            } catch { }
+            try
+            {
+                var val = mi.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0065001F") as string;
+                if (!string.IsNullOrWhiteSpace(val) && val.Contains("@"))
+                    return val;
+            } catch { }
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(mi.SenderEmailAddress) && mi.SenderEmailAddress.Contains("@"))
+                    return mi.SenderEmailAddress;
+            } catch { }
+            return null;
+        }
+
         // ======================== Helpers ========================
+                    
 
         private static T Safe<T>(Func<T> f) { try { return f(); } catch { return default(T); } }
 
@@ -607,6 +790,13 @@ namespace CrmRegardingAddin
         }
 
         // NEW: Build crmpartyinfo XML for Mail with PartyId + TypeCode.
+        
+        // Build crmpartyinfo XML for Mail (MS add-in compatible):
+        // - No ParticipationType attribute
+        // - Order: From first, then To, Cc, Bcc
+        // - Deduplicate by email (case-insensitive)
+        // - PartyId = guid sans accolades en minuscules ; TypeCode = OTC (8/2/1/4). If unresolved: PartyId="", TypeCode="-1"
+        // - Name = CRM display name if resolved; otherwise email
         private static string BuildPartyInfo(IOrganizationService org, Outlook.MailItem mi)
         {
             try
@@ -615,17 +805,109 @@ namespace CrmRegardingAddin
                 var sb = new StringBuilder();
                 sb.Append("<PartyMembers Version=\"1.0\">");
 
-                // Order: To (2), Cc (3), Bcc (4), then From (1)
-                AppendMailRecipientsWithCrm(org, sb, mi, Outlook.OlMailRecipientType.olTo, "2");
-                AppendMailRecipientsWithCrm(org, sb, mi, Outlook.OlMailRecipientType.olCC, "3");
-                AppendMailRecipientsWithCrm(org, sb, mi, Outlook.OlMailRecipientType.olBCC, "4");
-                AppendMailFromWithCrm(org, sb, mi, "1");
+                var seen = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+
+                // Helper local function to append one member
+                Action<string,string,Guid?,int?,string> append = (smtp, fallbackName, pid, otc, resolvedName) =>
+                {
+                    if (string.IsNullOrWhiteSpace(smtp)) return;
+                    if (seen.Contains(smtp)) return;
+                    seen.Add(smtp);
+
+                    string name = !string.IsNullOrWhiteSpace(resolvedName) ? resolvedName : (fallbackName ?? smtp);
+                    string partyIdStr = pid.HasValue ? UnbracedLower(pid.Value) : "";
+                    string typeCodeStr = otc.HasValue ? otc.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : "-1";
+
+                    sb.Append("<Member Email=\"").Append(SecurityElement.Escape(smtp)).Append("\" ");
+                    sb.Append("PartyId=\"").Append(SecurityElement.Escape(partyIdStr)).Append("\" ");
+                    sb.Append("TypeCode=\"").Append(typeCodeStr).Append("\" ");
+                    sb.Append("Name=\"").Append(SecurityElement.Escape(name ?? string.Empty)).Append("\" />");
+                };
+
+                // 1) From (first)
+                try
+                {
+                    string fromSmtp = GetOutgoingSenderSmtp(mi);
+                    if (string.IsNullOrWhiteSpace(fromSmtp)) fromSmtp = ActivityPartyBuilder.GetSenderSmtp(mi);
+                    string fromName = null;
+                    try { var acc = mi.SendUsingAccount; if (acc!=null && !string.IsNullOrWhiteSpace(acc.DisplayName)) fromName = acc.DisplayName; } catch { }
+                    if (string.IsNullOrWhiteSpace(fromName)) { try { fromName = mi.SenderName; } catch { } }
+
+                    Guid? pid = null; int? otc = null; string display = null;
+                    try
+                    {
+                        var resolved = ResolveCrmPartyByEmailWithName(org, fromSmtp);
+                        if (resolved != null) { pid = resolved.Item1; otc = resolved.Item2; display = resolved.Item3; }
+                    } catch { }
+                    append(fromSmtp, fromName, pid, otc, display);
+                }
+                catch { }
+
+                // 2) To, then Cc, then Bcc
+                try
+                {
+                    var order = new [] {
+                        Outlook.OlMailRecipientType.olTo,
+                        Outlook.OlMailRecipientType.olCC,
+                        Outlook.OlMailRecipientType.olBCC
+                    };
+
+                    foreach (var type in order)
+                    {
+                        foreach (Outlook.Recipient r in mi.Recipients)
+                        {
+                            if (r == null || r.Type != (int)type) continue;
+
+                            string smtp = null;
+                            string name = null;
+                            try { name = r.Name; } catch { }
+
+                            try
+                            {
+                                if (r.AddressEntry != null)
+                                {
+                                    var exu = r.AddressEntry.GetExchangeUser();
+                                    if (exu != null && !string.IsNullOrWhiteSpace(exu.PrimarySmtpAddress))
+                                    {
+                                        smtp = exu.PrimarySmtpAddress;
+                                        if (string.IsNullOrWhiteSpace(name)) name = exu.Name;
+                                    }
+                                    else
+                                    {
+                                        var dl = r.AddressEntry.GetExchangeDistributionList();
+                                        if (dl != null && !string.IsNullOrWhiteSpace(dl.PrimarySmtpAddress))
+                                        {
+                                            smtp = dl.PrimarySmtpAddress;
+                                            if (string.IsNullOrWhiteSpace(name)) name = dl.Name;
+                                        }
+                                    }
+                                }
+                            }
+                            catch { }
+                            if (string.IsNullOrWhiteSpace(smtp)) { try { smtp = r.Address; } catch { } }
+                            if (string.IsNullOrWhiteSpace(smtp)) continue;
+                            if (string.IsNullOrWhiteSpace(name))  { name = smtp; }
+
+                            Guid? pid = null; int? otc = null; string display = null;
+                            try
+                            {
+                                var resolved = ResolveCrmPartyByEmailWithName(org, smtp);
+                                if (resolved != null) { pid = resolved.Item1; otc = resolved.Item2; display = resolved.Item3; }
+                            }
+                            catch { }
+
+                            append(smtp, name, pid, otc, display);
+                        }
+                    }
+                }
+                catch { }
 
                 sb.Append("</PartyMembers>");
                 return sb.ToString();
             }
             catch { return null; }
         }
+
 
         private static void AppendMailFromWithCrm(IOrganizationService org, StringBuilder sb, Outlook.MailItem mi, string participation)
         {
@@ -801,6 +1083,8 @@ namespace CrmRegardingAddin
                 try
                 {
                     if (mi == null) return null;
+                    try { var smtpPref = GetOutgoingSenderSmtp(mi); if (!string.IsNullOrWhiteSpace(smtpPref)) return smtpPref; } catch { }
+
                     Outlook.AddressEntry s = mi.Sender;
                     if (s != null)
                     {
@@ -1014,5 +1298,60 @@ namespace CrmRegardingAddin
 
             return "application/octet-stream";
         }
+
+        // === Ensure Outlook's UserProperties (0x80C8) is present and defines MS CRM fields ===
+        private static void EnsureUserPropertiesForMail(Outlook.MailItem mi)
+        {
+            if (mi == null) return;
+            try
+            {
+                var pa = mi.PropertyAccessor;
+                var ups = mi.UserProperties;
+                EnsureUserProperty(ups, "crmLinkState", Outlook.OlUserPropertyType.olNumber, TryGet(pa, DaslId.LinkState, DaslStr.LinkState));
+                EnsureUserProperty(ups, "crmRegardingObjectId", Outlook.OlUserPropertyType.olText, TryGet(pa, DaslId.RegardingId, DaslStr.RegardingId_Camel, DaslStr.RegardingId_Lower, DaslStr.RegardingId_Old));
+                EnsureUserProperty(ups, "crmRegardingObjectTypeCode", Outlook.OlUserPropertyType.olText, TryGet(pa, DaslId.RegardingObjectType, DaslStr.RegardingTypeCode_Camel, DaslStr.RegardingTypeCode_Lower, DaslStr.RegardingType_Old));
+                EnsureUserProperty(ups, "Regarding", Outlook.OlUserPropertyType.olText, TryGet(pa, DaslStr.RegardingLabel));
+                EnsureUserProperty(ups, "crmpartyinfo", Outlook.OlUserPropertyType.olText, TryGet(pa, DaslId.PartyInfo, DaslStr.PartyInfo));
+                // Do not add to folder fields; Save to force 0x80C8 to be (re)generated by Outlook.
+                try { mi.Save(); } catch { }
+            }
+            catch { }
+        }
+
+        private static void EnsureUserPropertiesForAppointment(Outlook.AppointmentItem appt)
+        {
+            if (appt == null) return;
+            try
+            {
+                var pa = appt.PropertyAccessor;
+                var ups = appt.UserProperties;
+                EnsureUserProperty(ups, "crmLinkState", Outlook.OlUserPropertyType.olNumber, TryGet(pa, DaslId.LinkState, DaslStr.LinkState));
+                EnsureUserProperty(ups, "crmObjectTypeCode", Outlook.OlUserPropertyType.olNumber, TryGet(pa, DaslId.ObjectTypeCode, DaslStr.ObjectTypeCode));
+                EnsureUserProperty(ups, "crmRegardingObjectId", Outlook.OlUserPropertyType.olText, TryGet(pa, DaslId.RegardingId, DaslStr.RegardingId_Camel, DaslStr.RegardingId_Lower, DaslStr.RegardingId_Old));
+                EnsureUserProperty(ups, "crmRegardingObjectTypeCode", Outlook.OlUserPropertyType.olText, TryGet(pa, DaslId.RegardingObjectType, DaslStr.RegardingTypeCode_Camel, DaslStr.RegardingTypeCode_Lower, DaslStr.RegardingType_Old));
+                EnsureUserProperty(ups, "Regarding", Outlook.OlUserPropertyType.olText, TryGet(pa, DaslStr.RegardingLabel));
+                EnsureUserProperty(ups, "crmpartyinfo", Outlook.OlUserPropertyType.olText, TryGet(pa, DaslId.PartyInfo, DaslStr.PartyInfo));
+                try { appt.Save(); } catch { }
+            }
+            catch { }
+        }
+
+        private static void EnsureUserProperty(Outlook.UserProperties ups, string name, Outlook.OlUserPropertyType type, string value)
+        {
+            try
+            {
+                var up = ups.Find(name);
+                if (up == null)
+                {
+                    up = ups.Add(name, type, false /*AddToFolderFields*/);
+                }
+                if (value != null)
+                {
+                    try { up.Value = value; } catch { /* type mismatch: ignore */ }
+                }
+            }
+            catch { }
+        }
+
     }
 }

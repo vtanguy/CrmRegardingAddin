@@ -187,6 +187,7 @@ namespace CrmRegardingAddin
                 else
                 {
                     DeleteAllCrmProps(pa);
+                    SetCrmLinkStateZero(pa);
                     RemoveTrackingCategories(appt);
                 }
                 if (save) { appt.Save(); }
@@ -237,6 +238,7 @@ namespace CrmRegardingAddin
                 else
                 {
                     DeleteAllCrmProps(pa);
+                    SetCrmLinkStateZero(pa);
                     RemoveTrackingCategories(mail);
                 }
                 if (save) mail.Save();
